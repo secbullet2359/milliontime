@@ -30,7 +30,6 @@ twitter_username: jekyllrb
 github_username:  jekyll
 
 # Build settings
-theme: alembic-jekyll-theme
 plugins:
 - jekyll-sitemap
 - jekyll-mentions
