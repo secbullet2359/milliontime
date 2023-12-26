@@ -1,5 +1,6 @@
 source "https://rubygems.org"
 
+gem "jekyll-remote-theme"
 gem "jekyll", "~> 4.1"
 gem "jekyll-sitemap", "~> 1.4.0"
 gem "jekyll-mentions", "~> 1.6.0"
