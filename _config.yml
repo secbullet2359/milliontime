@@ -28,7 +28,7 @@ description: 'This is my new website'
 permalink: pretty
 repo: "https://github.com/secbullet2359/milliontime"
 logo: "https://www.gravatar.com/avatar/6c0377abcf4da91cdd35dea4554b2a4c?s=52"
-# css_inline: true
+css_inline: true
 
 # Pagination
 paginate: 5
