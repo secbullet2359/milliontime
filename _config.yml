@@ -39,14 +39,14 @@ navigation_header:
 - title: Home
   url: /
 - title: About
-  url: /milliontime/about/
+  url: /about/
 - title: Blog
-  url: /milliontime/blog/
+  url: /blog/
 
 # Footer nav
 navigation_footer:
 - title: Back to top
-  url: "#top"
+  url: "https://secbullet2359.github.io/milliontime/"
 
 # Collections
 collections:
