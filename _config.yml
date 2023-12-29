@@ -37,7 +37,7 @@ paginate_path: blog/page:num
 # Header nav
 navigation_header:
 - title: Home
-  url: /
+  url: milliontime
 - title: About
   url: milliontime/about/
 - title: Blog
