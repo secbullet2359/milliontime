@@ -5,7 +5,7 @@ styles: true
 
 // Typography
 $bodytype: (
-  font-family: 'Gowun Dodum',
+  font-family: 'Gowun Dodum', sans-serif,
   regular: 400,
   bold: 700,
   italic: italic,
@@ -13,14 +13,14 @@ $bodytype: (
 ) !default;
 
 $headingtype: (
-  font-family: 'Gowun Dodum',
+  font-family: 'Gowun Dodum', sans-serif,
   regular: 400,
   bold: 700,
   cap-height: 0.75
 ) !default;
 
 $monospacetype: (
-  font-family: 'Gowun Dodum',
+  font-family: 'Gowun Dodum', sans-serif,
   regular: 400,
   cap-height: 0.68
 ) !default;
