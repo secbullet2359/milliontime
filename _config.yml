@@ -79,4 +79,4 @@ defaults:
 #      If multiple fonts can be requested in a single url opt for this
 fonts:
   font_urls:
-    - https://fonts.googleapis.com/css2?family=Gowun+Dodum:wght@400;700&display=swap
+    - https://fonts.googleapis.com/css2?family=Gowun+Dodum:wght@400;700
