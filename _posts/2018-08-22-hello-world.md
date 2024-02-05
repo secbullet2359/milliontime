@@ -1,8 +1,8 @@
 ---
-title: Hello World
+title: 한글테스트중
 categories:
 - General
 feature_image: "https://picsum.photos/2560/600?image=872"
 ---
 
-This is my very first blog post. I haven't written anything yet but I'm sure I have some great stories to tell.
+블로그 한글 폰트 적용 테스트 중입니다.
