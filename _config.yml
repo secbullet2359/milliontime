@@ -22,7 +22,7 @@ plugins:
 
 # Site settings
 url: 'https://secbullet2359.github.io/milliontime/'
-baseurl: ''
+baseurl: '/milliontime/'
 title: 'My website'
 description: 'This is my new website'
 permalink: pretty
