@@ -37,11 +37,11 @@ paginate_path: blog/page:num
 # Header nav
 navigation_header:
 - title: Home
-  url: milliontime
+  url: 
 - title: About
-  url: milliontime/about/
+  url: about/
 - title: Blog
-  url: milliontime/blog/
+  url: blog/
 
 # Footer nav
 navigation_footer:
