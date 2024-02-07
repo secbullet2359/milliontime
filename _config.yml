@@ -62,7 +62,7 @@ collections:
 defaults:
   -
     scope:
-      path: ""
+      path: "/milliontime/"
       type: "posts"
     values:
       layout: post # Set the default layout for posts
