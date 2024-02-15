@@ -3,8 +3,6 @@
 
 ##### 스위치나 브릿지를 이용하여 네트워크를 구성할 때 fault torelance를 고려하여 스위치와 스위치 사이 또는 브릿지와 브릿지 사이에 이중 경로를 연결하여 사용할 수 있다. 이때, 하나의 서버에서 다른 서버로 연결되는 네트워크 경로가 두 개 이상으로 만들어져 있는 경우 looping 현상이 발생한다.
 
-![looping](https://secbullet2359.github.io/milliontime/image/networklooping1.png)
-
 <p align="center">
   <img src="https://secbullet2359.github.io/milliontime/image/networklooping1.png">
 </p>
@@ -23,7 +21,9 @@
 
 위 상황이 발생하게 되면 무한히 발생되는 packet전송에 의해 각 segemnt내에서도 CSMA/CD의 특성에 따라 같은 segment내의 서버들 간 네트워크 통신이 매우 느려지거나 더 이상 통신이 이루어지지 않는 상황이 발생한다.
 
-![looping](/image/networklooping2.png)
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/networklooping2.png">
+</p>
 
 위 사진과 같이 네트워크를 구성하여도 마찬가지이다. 
 
@@ -33,7 +33,10 @@ sw1 - sw2 - sw3 가 하나의 cycle을 구성하고 있기 때문에 어떤 sege
 
 STP에 대해 자세히 살펴보기 전에 Spanning Tree Algorithm에 대해 먼저 살펴보겠다.
 
-![STA](/image/sta1.png "no cylcle, include all node")
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/networklooping2.png">
+  <figcaption align="center">no cylcle, include all node</figcaption>
+</p>
 
 Spanning Tree는 그래프의 최소 연결 부분 그래프로 빨간선으로 이루어진 그래프를 의미한다.
 
