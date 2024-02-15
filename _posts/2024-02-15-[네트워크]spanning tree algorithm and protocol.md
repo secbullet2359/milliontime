@@ -5,7 +5,7 @@
 
 ![test](/image/test.png)
 
-![looping](/image/networklooping1.png)
+![looping](https://secbullet2359.github.io/milliontime/image/networklooping1.png)
 
 위 사진은 looping이 이루어지는 과정을 요약한 것이다. CSMA/CD의 특징에 따라 **하나의 네트워크 segment에서는 packet전송은 한 번에 하나만 이용**할 수 있다는 허브의 단점을 개선하기 위해 여러 network segment를 분리할 수 있는 스위치나 브릿지를 이용하여 네트워크를 구성할 수 있지만 앞서서 얘기한 것과 같이 하나의 서버에서 다른 서버로 갈 수 있는 이중 경로가 존재하는 경우 looping이 발생한다.
 
@@ -25,11 +25,47 @@
 
 위 사진과 같이 네트워크를 구성하여도 마찬가지이다. 
 
-sw1 - sw2 - sw3 가 하나의 loop를 구성하고 있기 때문에 어떤 segemnt에서 출발하여도 다른 segment에 있는 서버로 무조건 2개의 경로를 가지게 된다. 이러한 looping을 해결하기 위한 protocol이 STP(spanning tree protocol)이다. 
+sw1 - sw2 - sw3 가 하나의 cycle을 구성하고 있기 때문에 어떤 segemnt에서 출발하여도 다른 segment에 있는 서버로 무조건 2개의 경로를 가지게 된다. 이러한 looping을 해결하기 위한 protocol이 STP(spanning tree protocol)이다. 
 
 ### Spanning Tree algorithm
 
 STP에 대해 자세히 살펴보기 전에 Spanning Tree Algorithm에 대해 먼저 살펴보겠다.
+
+![STA](/image/sta1.png "no cylcle, include all node")
+
+Spanning Tree는 그래프의 최소 연결 부분 그래프로 빨간선으로 이루어진 그래프를 의미한다.
+
+만약 여러 개의 스위치나 브릿지로 이루어진 네트워크에서 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
