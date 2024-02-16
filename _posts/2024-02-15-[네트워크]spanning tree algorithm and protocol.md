@@ -58,7 +58,7 @@ looping이 발생하는 이유는 결과적으로 그래프의 노드간 cycle�
 
 MST를 구하는 알고리즘은 Kruskal, Prim이 존재하는데 간단하게 두 알고리즘의 pseudo code만 첨부한다.
 
-- Kruscal Algorithm : 여러 집합을 합쳐가며 하나의 Tree를 만드는 방식
+- Kruscal Algorithm : 여러 집합을 합쳐가며 Tree를 만드는 방식
 
 ```
 Kruskal(G)
@@ -87,16 +87,42 @@ Kruskal(G)
   <img src="https://secbullet2359.github.io/milliontime/image/sta3.png">
 </p>
 
-> 위 그림은 Kruscal Algorithm을 수행하는 일부분을 가져온 것이다. e 단계에서 이미 3개의 집합이 구성되어 있는 것을 확인할 수 있다.(회색으로 묶여진 Vertices가 하나의 집합, 가장 먼저 추가된 vertices를 root로 설정하여 같은 root를 가지면 같은 집합에 존재하는 Vertices로 인식) f 단계에서 가장 하단 집합에 속해있는 두개의 Vertices를 선택하려 할 때 cycle이 만들어지기 때문에 집합에 추가하지 않고 넘어간다. 
+> 위 그림은 Kruscal Algorithm을 수행하는 일부분을 가져온 것이다. e 단계에서 이미 3개의 집합이 구성되어 있는 것을 확인할 수 있다.(회색으로 묶여진 Vertices가 하나의 집합, 가장 먼저 추가된 vertices를 root로 설정하여 같은 root를 가지면 같은 집합에 존재하는 Vertices로 인식) f 단계에서 가장 하단 집합에 속해있는 두개의 Vertices를 선택하려 할 때 cycle이 만들어지기 때문에 집합에 추가하지 않고 넘어간다.
 
+- Prim Algorithm : 하나의 Vertices에서 집합을 늘려나가며 Tree를 만드는 방식
 
+```
+Prim(G,r)
+// G = (V,E) : Given Graph
+// r : Starting Vertex
+// S : Set of Vertex in Minimum Spanning Tree
+// L(u) : Set for Adjacency Vertices of Vertex 'u'
+// d[v] : Minimum Cost to connect with Vertex 'v' and Spanning Tree
+// w(a, b) : Cost of Edge from Vertex 'a' to Vertex 'b'
+{
+	S = emptySet();
+    for(u ∈ V)
+    	d[u] = INT_MAX;
+    
+    d[r] = 0;
+    
+    while(S != V) {
+    	u = extractMin(V-S, d);
+        S = S ∪ {u};
+        
+        for(v ∈ L(u))
+        	if(v ∈ V-S && w(u, v) < d[v]) {
+            	d[v] = w(u, v);
+                tree[v] = u;
+            }
+    }
+}
 
-
-
-
-
-
-
+extractMin(Q, d[])
+{
+	// 집합 Q에서 d값이 가장 작은 정점 u를 리턴
+}
+```
 
 
 
