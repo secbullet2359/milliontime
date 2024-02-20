@@ -126,23 +126,3 @@ extractMin(Q, d[])
 
 > Prim Algorithm의 핵심은 **하나의 집합에 다른 Vertices를 계속해서 포함해나가는 방식**의 알고리즘이다. 
 Prim Algorithm의 구현은 2가지 방식으로 가능한데 하나는 Spanning Tree의 집합인 S와 S에 포함되어 있지 않은 Vertices 집합V-S의 두개의 관점에서 구현이 가능하다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
