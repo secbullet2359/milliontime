@@ -33,6 +33,8 @@ Mac address table의 불안정은 목적지를 알고 unicast를 보내는 서�
 
 ### STP, MSTP, RSTP
 
+#### STP
+
 ST algorithm을 통해 확인하였듯이 STP는 스위치 사이 cycle을 만드는 port를 비활성화 시키고 Minimum Spannig Tree를 만드는 역할을 수행한다. 이때 네트워크에서 각 스위치의 정보와 연결 정보들을 지속적으로 파악해야 ST를 구성할 수 있는데 이 정보를 알아내기 위해 스위치 간 전파되는 frame을 BPDU(Bridge Protocol Data Unit)이라고 부른다.
 
 1. Configuration BPDU : Switch 및 Port의 역할을 결정(init) → root switch에서 2초마다 전파
@@ -63,7 +65,9 @@ Root switch까지의 포트의 경로 값을 합산한 값으로 스위치 내 R
 스위치에서 root port와 연결되어 각 segment와 통신하기 위한 designated port를 선출한다.
 
 DP와 RP로 설정되지 않은 포트들은 block되며 이러한 포트들을 alternative port라고 부른다.
-> STP에서는 block되어 있는 port를 non-designated port라고 부르며 RSTP(Rapid-STP)에서는 alternative port또는 backup port라고 부른다. alternative port는 장비간의 비교를 통해서 우선 순위가 밀린 port를 의미하고, backup port는 같은 장비 내 네트워크에 포함되어 있는 redundant를 제공하는 포트 중 우선 순위가 밀린 port를 의미한다.
+> STP에서는 block되어 있는 port를 non-designated port라고 부르며 RSTP(Rapid-STP)에서는 alternative port또는 backup port라고 부른다. **alternative port**는 장비간의 비교를 통해서 우선 순위가 밀린 port를 의미하고, **backup port**는 같은 장비 내 네트워크에 포함되어 있는 redundant를 제공하는 포트 중 우선 순위가 밀린 port를 의미한다.
+
+> port두 개를 하나는 DP/RP, backup port로 각각 인식하여 구성할 수도 있지만 두 개의 포트를 하나로 묶어 **etherchannel(Cisco) trunk port(그 외 Vendor)** 로 사용할 수도 있다. L2,L3장비에서 사용 가능하며 STP의 상태변화를 거치지 않고 장애가 발생시 바로 사용가능한 다른 port가 활성화된다. 
 
 <p align="center">
   <img src="https://secbullet2359.github.io/milliontime/image/stp-ports-costs-states-1.png">
@@ -88,7 +92,36 @@ STP의 link에서 장애가 발생하는 경우는 2가지로 나눌 수 있다.
   <figcaption align="center">https://notes.networklessons.com/ direct link down</figcaption>
 </p>
 
-alternative port를 가지고 있지 않은 스위치에서 link down이 이루어지게 되는 경우를 indirect link down이라고 부른다. 
+alternative port를 가지고 있지 않은 스위치에서 link down이 이루어지게 되는 경우를 indirect link down이라고 부른다. 앞서 얘기한 것과 같이 네트워크에 포함된 스위치에서 BPDU를 root 스위치에서 수신받지 못하는 경우 topology의 변화를 인식하여 자기 자신이 root 스위치 처럼 동작하여 Inferior BPDU를 인접한 스위치로 송신한다.
+> root스위치가 link down이 일어난 스위치보다 root bridge ID가 더 작기 때문에 포트 장애가 발생된 스위치는 무조건 후순위(inferior) BPDU를 송신하게 된다.
+
+alternative port를 가지고 있는 스위치에서는 root스위치에서 전파한 BPDU와 inferior BPDU를 동시에 수신하게 되는데 이때 스위치가 링크 장애가 발생한 것을 확인하고 alternative port를 DP로 변경한다.
+
+전송 상태가 변경될 때 Max Age Time 20초가 소요되고 listening(15초), learning(15초) 상태를 거쳐 도합 50초의 시간 이후 frame을 송수신할 수 있는 forwarding 상태로 변경이 된다.
+
+Cisco 장비에서 `show spanning-tree valn <LAN ID>`의 명령어로 해당 segment의 port 상태를 확인할 수 있다. 
+
+#### RSTP
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/BPDU-802.1w-802.1d.png">
+  <figcaption align="center">https://www.cisco.com/ stp(IEEE 802.1D) vs rstp(IEEE 802.1w</figcaption>
+</p>
+
+RSTP는 STP와 다르게 BPDU flag 6bit를 사용하여 proposal, agreement 및 port role등 여러 정보를 스위치간 전달한다. 스위치 끼리 RP, DP를 선정하기 위해 proposal, agreement bit를 사용한다.
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/rstp-indirect1.png">
+</p>
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/rstp-indirect2.png">
+</p>
+
+indirect link down이 발생하는 경우 inferior BPDU와 root스위치의 BPDU를 비교하여 root스위치가 아닌 스위치에서 장애가 발생했음을 인식하는 과정은 기존 STP와 동일하다. 
+
+장애 인식시 스위치는 alternative port를 DP로 변경하고 root스위치의 BPDU를 link down이 발생한 스위치로 전파한다. 이 BPDU를 받은 스위치는 연결된 port를 DP에서 RP로 변경한다.
+위 작업이 사전에 이루어지기 때문에 이후 proposal, approve BPDU를 서로 교환하여 최종 port 결정이 확정되면 그 즉시 유휴 연결된 port가 FWD 상태로 변경이 된다. 
 
 
 
