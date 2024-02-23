@@ -38,9 +38,61 @@ ST algorithm을 통해 확인하였듯이 STP는 스위치 사이 cycle을 만�
 1. Configuration BPDU : Switch 및 Port의 역할을 결정(init) → root switch에서 2초마다 전파
 2. TCN(Topology Change Notification) BPDU : 스위치 네트워크가 변경되었을 때 내용을 전파하기 위해 사용
 
+BPDU는 root switch에서 시작되어 전파되기 때문에 각 switch에서는 자신이 수신하는 BPDU가 없을 경우 스스로를 root switch로 인식한다.이 특징은 indirect link down이 이루어졌을 때 새롭게 ST를 스위치간 구성하는데에 사용된다.
+* * *
 BPDU가 전파되었을 때 switch에서는 다음과 같은 방식으로 STP를 따른다.
 
 1. Root switch 선출
+
+모든 switch는 자신을 식별할 수 있는 id를 가지고 있는데 이를 BRIDGE ID(BID)라고 부른다. BID는 8byte로 구성되는데 2Bytes의 bridge priority, 6Bytes의 MAC address로 구성된다. 가장 BRIDGE ID값이 낮은 switch가 root switch가 된다. 
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/stp-root-bridge-election-1.png">
+</p>
+
+2. Root Port 선출
+
+- Past Cost(IEEE에서 지정한 Link Speed, Recommend value/range를 고려)가 낮은 port
+- 인접 스위치의 BID가 가장 낮은 port
+- 인접 스위치의 PID가 가장 낮은 port
+
+Root switch까지의 포트의 경로 값을 합산한 값으로 스위치 내 Root Port를 지정한다. Port ID는 BPDU를 전송하는 Port의 우선순위와 Port Number로 구성된다.
+
+3. Designated Port 선출
+
+스위치에서 root port와 연결되어 각 segment와 통신하기 위한 designated port를 선출한다.
+
+DP와 RP로 설정되지 않은 포트들은 block되며 이러한 포트들을 alternative port라고 부른다.
+> STP에서는 block되어 있는 port를 non-designated port라고 부르며 RSTP(Rapid-STP)에서는 alternative port또는 backup port라고 부른다. alternative port는 장비간의 비교를 통해서 우선 순위가 밀린 port를 의미하고, backup port는 같은 장비 내 네트워크에 포함되어 있는 redundant를 제공하는 포트 중 우선 순위가 밀린 port를 의미한다.
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/stp-ports-costs-states-1.png">
+</p>
+* * *
+STP의 link에서 장애가 발생하는 경우는 2가지로 나눌 수 있다. link가 down되었을 때 이를 인식하여 연결 구성을 변경하는 스위치는 backup port나 alternative port를 가지고 있는 스위치에서 작업이 이루어진다.
+
+- 직접 link down
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/stp-topology-one-switch-blocked-port.png">
+  <figcaption align="center">https://notes.networklessons.com/ direct link down</figcaption>
+</p>
+
+스위치나 브릿지에서 alternate port와 같은 segment에 연결된 DP나 RP가 down될 경우 장비는 전달되는 carrier를 감지할 수 없다.
+> STP carrier VLAN은 STP domain(stpd)에서 정의되는데 STP에서 사용될 port와 802.1Q tag를 정의하여 EMISTP(Extreme Instance Spanning Tree protocol), BDPU에 encapsulated되는 PVST(Per VLAN Spanning Tree)를 구성해 전송할 때 사용된다. 
+
+- 간접 link down
+
+<p align="center">
+  <img src="https://secbullet2359.github.io/milliontime/image/stp-topology-3switch-blocked_port.png">
+  <figcaption align="center">https://notes.networklessons.com/ direct link down</figcaption>
+</p>
+
+alternative port를 가지고 있지 않은 스위치에서 link down이 이루어지게 되는 경우를 indirect link down이라고 부른다. 
+
+
+
+
 
 
 
