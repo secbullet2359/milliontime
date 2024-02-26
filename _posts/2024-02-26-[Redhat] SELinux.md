@@ -15,6 +15,7 @@ SELinux User : Role : Type : Level : File
 파일을 새 위치에 복사 시 해당파일의 SELinux 컨텍스트가 **새 위치의 레이블 지정 정책 또는 상위 디렉토리 상속(정책이 없는 경우)** 으로 결정된 새 컨텍스트로 변경될 수 있음
 
 `cp -p` 명령 : 복사하기 전 모든 파일 특성을 유지
+
 `cp -c` 명령 : 복사하는 동안 SELinux 컨텍스트만 유지
 
 > 파일을 같은 파일시스템 내에서 이동하는 경우에는 기존의 selinux context가 그대로 유지
@@ -56,13 +57,3 @@ SELinux 작업 거부 → /var/log/audit/audit.log 보안로그 파일에 AVC �
 4. `ls -dZ` 오류가 발생하는 디렉토리와 하위 파일 context 확인
 5. `semange fcontext -a -t httpd_sys_content_t '/디렉토리명(/.*)?`으로 컨텍스트 규칙 생성
 6. `restorecon -R /디렉토리명/`설정한 컨텍스트 규칙명으로 파일 컨텍스트 정책 수정
-
-
-
-
-
-
-
-
-
-
