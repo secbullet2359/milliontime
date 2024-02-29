@@ -1,6 +1,5 @@
 
 ---
-title: [네트워크]spanning tree protocol
 categories:
 - 네트워크
 ---
