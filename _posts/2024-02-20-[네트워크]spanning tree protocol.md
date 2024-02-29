@@ -1,4 +1,9 @@
 
+---
+title: [네트워크]spanning tree protocol
+categories:
+- 네트워크
+---
 ### spanning tree protocol의 Hardware 동작
 
 ##### STP protocol은 physical redundancy(안정성을 위한 이중화 및 추가 자원할당)를 구성하였을 때 L1 영역에서 Mac address instability, Broadcast storm, Duplicate unicast frame 같은 redundant issue가 발생할 때 사용한다. STP는 RSTP(Rapid STP), MSTP(Multiple STP)의 확장 프로토콜이 존재한다.
@@ -121,16 +126,4 @@ RSTP는 STP와 다르게 BPDU flag 6bit를 사용하여 proposal, agreement 및 
 indirect link down이 발생하는 경우 inferior BPDU와 root스위치의 BPDU를 비교하여 root스위치가 아닌 스위치에서 장애가 발생했음을 인식하는 과정은 기존 STP와 동일하다. 
 
 장애 인식시 스위치는 alternative port를 DP로 변경하고 root스위치의 BPDU를 link down이 발생한 스위치로 전파한다. 이 BPDU를 받은 스위치는 연결된 port를 DP에서 RP로 변경한다.
-위 작업이 사전에 이루어지기 때문에 이후 proposal, approve BPDU를 서로 교환하여 최종 port 결정이 확정되면 그 즉시 유휴 연결된 port가 FWD 상태로 변경이 된다. 
-
-
-
-
-
-
-
-
-
-
-
-
+위 작업이 사전에 이루어지기 때문에 이후 proposal, approve BPDU를 서로 교환하여 최종 port 결정이 확정되면 그 즉시 유휴 연결된 port가 FWD 상태로 변경이 된다.
