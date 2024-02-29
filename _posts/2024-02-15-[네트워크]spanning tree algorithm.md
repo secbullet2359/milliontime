@@ -2,10 +2,6 @@
 categories:
   - 네트워크
 ---
----
-categories:
-- 네트워크
----
 
 ### spanning tree protocol
 
