@@ -31,12 +31,14 @@ layout: default
   
 </main>
 
-<a class="button" onclink="window.open({{ include.link | default: 'http://prose.io' }})"{% if include.color %} style="background: {{ include.color }}"{% endif %}>
+<!-- <a input="button" onclink="window.open('http://prose.io')"{% if include.color %} style="background: {{ include.color }}"{% endif %}>
   {{ include.text | default: "posting" }}
   {% if include.icon %}
     &nbsp; 
     {% include icon.html id=include.icon title=include.icon %}
   {% endif %}
-</a>
+</a> -->
+
+<input type="submit" onclink="window.open('http://prose.io')">
 
 {% include site-footer.html %}
