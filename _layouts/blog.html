@@ -28,18 +28,15 @@ layout: default
   </div>
 
   {% if page.aside == true %}{% include site-aside.html %}{% endif %}
-
-  <a class="button" href="{{ include.link | default: 'http://prose.io' }}"{% if include.color %} style="background: {{ include.color }}"{% endif %}>
-    {{ include.text | default: "posting" }}
-    {% if include.icon %}
-      &nbsp; 
-      {% include icon.html id=include.icon title=include.icon %}
-    {% endif %}
-  </a>
-
   
 </main>
 
-
+<a class="button" onclink="window.open({{ include.link | default: 'http://prose.io' }})"{% if include.color %} style="background: {{ include.color }}"{% endif %}>
+  {{ include.text | default: "posting" }}
+  {% if include.icon %}
+    &nbsp; 
+    {% include icon.html id=include.icon title=include.icon %}
+  {% endif %}
+</a>
 
 {% include site-footer.html %}
