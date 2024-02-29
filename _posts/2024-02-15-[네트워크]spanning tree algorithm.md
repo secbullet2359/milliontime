@@ -1,5 +1,5 @@
 ---
-title: spanning tree protocol
+title: [네트워크] spanning tree algorithm
 categories:
 - 네트워크
 ---
