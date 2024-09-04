@@ -27,7 +27,7 @@ title: 'My website'
 description: 'This is my new website'
 permalink: pretty
 repo: "https://github.com/secbullet2359/milliontime"
-logo: "/image/test.png"
+logo: "image/test.png"
 css_inline: true
 
 # Pagination
