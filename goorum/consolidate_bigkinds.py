@@ -40,8 +40,29 @@ def parse_filename(path: Path) -> dict:
     }
 
 
+def _sniff_and_read(path: Path) -> pd.DataFrame:
+    """실제 파일 시그니처를 보고 적절한 리더를 선택해서 읽는다.
+    (BigKinds 등 일부 다운로드 시스템은 확장자가 .xlsx라도 실제로는
+     옛날 바이너리 .xls(OLE)이거나 HTML 표인 경우가 있어서, 확장자만 믿고
+     무조건 openpyxl로 열면 'BadZipFile' 에러로 전체가 멈추는 문제가 생김)
+    """
+    with open(path, "rb") as f:
+        head = f.read(16)
+
+    if head[:2] == b"PK":
+        return pd.read_excel(path, engine="openpyxl")
+    elif head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return pd.read_excel(path, engine="xlrd")  # pip install xlrd 필요
+    elif head[:5] in (b"<html", b"<!DOC", b"<?xml"):
+        tables = pd.read_html(path)
+        return tables[0]
+    else:
+        # 마지막 시도: 기본 엔진으로 시도 (실패하면 위 호출자에서 잡음)
+        return pd.read_excel(path)
+
+
 def load_one_file(path: Path) -> pd.DataFrame:
-    df = pd.read_excel(path)
+    df = _sniff_and_read(path)
     meta = parse_filename(path)
 
     df["일자"] = pd.to_datetime(df["일자"], format="%Y%m%d")
@@ -70,12 +91,24 @@ def main():
         print(f"  - {f.name}")
 
     frames = []
+    failed_files = []
     for f in files:
         print(f"\n로딩 중: {f.name}")
-        df = load_one_file(f)
+        try:
+            df = load_one_file(f)
+        except Exception as e:
+            print(f"  ✗ 로딩 실패: {type(e).__name__}: {e}")
+            print(f"    -> diagnose_file.py '{f}' 로 실제 포맷을 확인해보세요.")
+            failed_files.append((f.name, str(e)))
+            continue
+
         print(f"  {len(df)}행, 기간 {df['일자'].min().date()} ~ {df['일자'].max().date()}, "
               f"언론사: {df['언론사'].unique().tolist()}")
         frames.append(df)
+
+    if not frames:
+        print("\n정상적으로 로딩된 파일이 하나도 없습니다.")
+        return
 
     combined = pd.concat(frames, ignore_index=True)
     before = len(combined)
@@ -117,6 +150,11 @@ def main():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     combined.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
     print(f"\n저장 완료: {OUTPUT_PATH}")
+
+    if failed_files:
+        print(f"\n⚠ 로딩 실패한 파일 {len(failed_files)}개 (별도 확인 필요):")
+        for name, err in failed_files:
+            print(f"  - {name}: {err}")
 
 
 if __name__ == "__main__":
