@@ -31,16 +31,18 @@ def _register_weighted_sum_layer():
     """
     train_attention_lstm.py에서 학습한 모델은 WeightedSum이라는 커스텀 레이어를 씀.
     모델을 불러오기(load_model) 전에 이 클래스가 반드시 import(정의)되어 있어야
-    Keras가 저장된 모델을 복원할 수 있음 (register_keras_serializable로 등록된 이름을
-    찾는 방식이라, 이 함수를 호출해서 클래스를 정의/등록해두는 것).
-    train_attention_lstm.py와 정의가 반드시 동일해야 함 (구조가 다르면 로딩은 되어도
-    실제 계산이 달라짐).
+    Keras가 저장된 모델을 복원할 수 있음. train_attention_lstm.py와 정의가
+    반드시 동일해야 함 (구조가 다르면 로딩은 되어도 실제 계산이 달라짐).
     """
     import tensorflow as tf
-    from tensorflow import keras
 
-    @keras.saving.register_keras_serializable(package="AttentionLSTM")
-    class WeightedSum(keras.layers.Layer):
+    try:
+        from tensorflow.keras.saving import register_keras_serializable
+    except (ImportError, AttributeError):
+        from tensorflow.keras.utils import register_keras_serializable
+
+    @register_keras_serializable(package="AttentionLSTM")
+    class WeightedSum(tf.keras.layers.Layer):
         def call(self, inputs):
             lstm_out, attention_weights = inputs
             return tf.reduce_sum(lstm_out * attention_weights, axis=1)
@@ -183,7 +185,10 @@ def analyze_date(target_date_str: str, stock_code: str, top_n: int = 5):
     daily_emb, emb_cols = build_daily_calendar_embeddings(daily_emb_raw)
     article_meta = pd.read_csv(ARTICLE_META_PATH, parse_dates=["일자"])
     article_emb = np.load(ARTICLE_EMB_PATH)
-    model = load_model(MODEL_PATH)
+    # compile=False: 여기서는 predict()만 쓰고 fit()은 안 하므로 loss(masked_mse) 등
+    # 학습용 설정을 복원할 필요가 없음. masked_mse는 등록 안 된 일반 함수라 그대로
+    # load하면 "Could not locate function" 에러가 나므로 이렇게 피해감.
+    model = load_model(MODEL_PATH, compile=False)
 
     important_day, articles, impact_matrix = compute_loo_for_date(
         model, daily_emb, emb_cols, article_meta, article_emb, target_date
@@ -230,7 +235,7 @@ def run_full_analysis():
     daily_emb, emb_cols = build_daily_calendar_embeddings(daily_emb_raw)
     article_meta = pd.read_csv(ARTICLE_META_PATH, parse_dates=["일자"])
     article_emb = np.load(ARTICLE_EMB_PATH)
-    model = load_model(MODEL_PATH)
+    model = load_model(MODEL_PATH, compile=False)
 
     target_dates = pd.read_csv(VALID_DATES_PATH, parse_dates=["날짜"])["날짜"].tolist()
     print(f"전체 분석 대상 날짜 수: {len(target_dates)} x 종목 {len(stock_order)}개")
