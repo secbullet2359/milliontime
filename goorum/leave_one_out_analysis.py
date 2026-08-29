@@ -27,6 +27,30 @@ import pandas as pd
 WINDOW_SIZE = 7  # prepare_lstm_dataset.py와 반드시 동일한 값을 유지해야 함 (학습 때와 같은 윈도우 크기)
 
 
+def _register_weighted_sum_layer():
+    """
+    train_attention_lstm.py에서 학습한 모델은 WeightedSum이라는 커스텀 레이어를 씀.
+    모델을 불러오기(load_model) 전에 이 클래스가 반드시 import(정의)되어 있어야
+    Keras가 저장된 모델을 복원할 수 있음 (register_keras_serializable로 등록된 이름을
+    찾는 방식이라, 이 함수를 호출해서 클래스를 정의/등록해두는 것).
+    train_attention_lstm.py와 정의가 반드시 동일해야 함 (구조가 다르면 로딩은 되어도
+    실제 계산이 달라짐).
+    """
+    import tensorflow as tf
+    from tensorflow import keras
+
+    @keras.saving.register_keras_serializable(package="AttentionLSTM")
+    class WeightedSum(keras.layers.Layer):
+        def call(self, inputs):
+            lstm_out, attention_weights = inputs
+            return tf.reduce_sum(lstm_out * attention_weights, axis=1)
+
+    return WeightedSum
+
+
+_register_weighted_sum_layer()  # 모듈 로딩 시점에 바로 등록
+
+
 def load_daily_embeddings_raw(path: Path) -> pd.DataFrame:
     """
     daily_news_embeddings 파일 로더. parquet이 기본이지만, 확장자가 .csv이거나
