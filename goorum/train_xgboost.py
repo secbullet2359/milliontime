@@ -29,11 +29,52 @@ TRAIN_RATIO, VAL_RATIO = 0.70, 0.15   # 나머지 15%는 test
 DROP_COLS = ["날짜", "종목명", "next_return", "actual_next_close"]
 
 
+def load_input(path: Path) -> pd.DataFrame:
+    """
+    확장자가 .xls/.xlsx라도 실제로는 CSV(텍스트)로 저장된 경우가 있어
+    (예: pandas to_csv 결과를 확장자만 바꿔 올린 경우) 시그니처를 보고 판단.
+    """
+    with open(path, "rb") as f:
+        head = f.read(8)
+
+    is_binary_excel = head[:2] == b"PK" or head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    if path.suffix.lower() in (".xls", ".xlsx") and not is_binary_excel:
+        print(f"⚠ {path.name}: 확장자는 {path.suffix}지만 실제로는 CSV 텍스트 포맷입니다. CSV로 읽습니다.")
+        return pd.read_csv(path, dtype={"종목코드": str}, parse_dates=["날짜"], encoding="utf-8-sig")
+    elif path.suffix.lower() in (".xls", ".xlsx"):
+        return pd.read_excel(path, dtype={"종목코드": str}, parse_dates=["날짜"])
+    else:
+        return pd.read_csv(path, dtype={"종목코드": str}, parse_dates=["날짜"], encoding="utf-8-sig")
+
+
+def ensure_halt_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    '거래정지'/'재상장첫날' 컬럼이 없으면(중간 병합 과정에서 빠진 경우 등),
+    원본 신호(거래량=0)로부터 다시 계산해서 만든다.
+    (build_dataset.py에서 썼던 것과 동일한 탐지 방식: 거래량==0 -> 거래정지,
+     그 다음날 -> 재상장첫날)
+    """
+    if "거래정지" in df.columns and "재상장첫날" in df.columns:
+        return df
+
+    print("⚠ '거래정지'/'재상장첫날' 컬럼이 없어 거래량 기준으로 다시 계산합니다.")
+    df = df.sort_values(["종목코드", "날짜"]).copy()
+    df["거래정지"] = (df["거래량"] == 0).astype(int)
+    df["재상장첫날"] = (
+        df.groupby("종목코드")["거래정지"].shift(1).fillna(0).astype(bool) & (~df["거래정지"].astype(bool))
+    ).astype(int)
+
+    n_halt = df["거래정지"].sum()
+    print(f"  재계산 결과: 거래정지 {n_halt}행, 재상장첫날 {df['재상장첫날'].sum()}행")
+    return df
+
+
 def build_target(df: pd.DataFrame) -> pd.DataFrame:
     """
     다음날 수익률(next_return)과 실제 다음날 종가(actual_next_close)를 만든다.
     거래정지/재상장첫날에 걸리는 경우는 NaN으로 남겨서 이후 dropna로 학습 제외.
     """
+    df = ensure_halt_flags(df)
     df = df.sort_values(["종목코드", "날짜"]).copy()
 
     df["next_return"] = df.groupby("종목코드")["종가"].shift(-1) / df["종가"] - 1
@@ -92,7 +133,7 @@ def evaluate(df: pd.DataFrame, y_pred_return: np.ndarray, label: str) -> dict:
 
 def main():
     print(f"입력 로딩: {INPUT_PATH}")
-    df = pd.read_csv(INPUT_PATH, dtype={"종목코드": str}, parse_dates=["날짜"])
+    df = load_input(INPUT_PATH)
     df["종목코드"] = df["종목코드"].astype("category")
 
     df = build_target(df)
