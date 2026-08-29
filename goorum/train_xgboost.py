@@ -25,6 +25,12 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 TOLERANCE = 0.05          # ±5% 허용오차
 TRAIN_RATIO, VAL_RATIO = 0.70, 0.15   # 나머지 15%는 test
 
+# ⚠ 뉴스 임베딩이 2026-04-02까지만 존재함 (daily_news_embeddings.parquet 확인 결과).
+#   그 이후 구간은 news_influence_score_per_stock이 통째로 결측이라, 평가가
+#   왜곡되지 않도록 이 날짜까지의 데이터만 사용한다.
+#   뉴스 수집이 이후로 더 진행되면 이 값을 늘려서 다시 실행하면 됨.
+DATA_CUTOFF_DATE = "2026-04-02"
+
 # 학습에 쓰지 않을 컬럼 (식별자, 미래정보/타겟 관련, 중복정보)
 DROP_COLS = ["날짜", "종목명", "next_return", "actual_next_close"]
 
@@ -77,6 +83,12 @@ def build_target(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_halt_flags(df)
     df = df.sort_values(["종목코드", "날짜"]).copy()
 
+    # 뉴스 점수 결측을 "0에 가까운 값"과 구분하기 위한 명시적 플래그.
+    # (이전 진단 결과: Train/Val엔 결측이 0%였는데 Test 후반부에만 갑자기 50%가
+    #  비어서, 모델이 결측을 처리하는 학습된 경험이 거의 없었던 게 test 성능
+    #  하락의 핵심 원인 중 하나였음 - 이 플래그로 "결측 자체"를 신호로 만들어줌)
+    df["news_score_missing"] = df["news_influence_score_per_stock"].isna().astype(int)
+
     df["next_return"] = df.groupby("종목코드")["종가"].shift(-1) / df["종가"] - 1
     df["actual_next_close"] = df.groupby("종목코드")["종가"].shift(-1)
 
@@ -112,6 +124,23 @@ def time_based_split(df: pd.DataFrame):
     return train, val, test
 
 
+def evaluate_by_news_coverage(df: pd.DataFrame, y_pred_return: np.ndarray, label: str):
+    """
+    뉴스 점수가 있는 구간 / 없는 구간을 나눠서 각각 평가.
+    (test 후반부처럼 뉴스가 통째로 빠진 구간의 성능을 따로 봐야, 진짜 모델의
+     일반화 성능과 '데이터가 아직 없어서 생긴 하락'을 구분할 수 있음)
+    """
+    has_news = ~df["news_score_missing"].astype(bool)
+    results = []
+    for sub_label, mask in [("뉴스 O", has_news), ("뉴스 X(결측)", ~has_news)]:
+        if mask.sum() == 0:
+            continue
+        sub_df = df[mask]
+        sub_pred = y_pred_return[mask.values]
+        results.append(evaluate(sub_df, sub_pred, f"{label} - {sub_label}"))
+    return results
+
+
 def evaluate(df: pd.DataFrame, y_pred_return: np.ndarray, label: str) -> dict:
     """±5% 적중률 + 베이스라인(전날 종가 유지) 비교."""
     predicted_close = df["종가"].values * (1 + y_pred_return)
@@ -136,6 +165,12 @@ def main():
     df = load_input(INPUT_PATH)
     df["종목코드"] = df["종목코드"].astype("category")
 
+    cutoff = pd.Timestamp(DATA_CUTOFF_DATE)
+    n_before = len(df)
+    df = df[df["날짜"] <= cutoff].copy()
+    print(f"데이터 컷오프 적용 ({DATA_CUTOFF_DATE}까지): {n_before}행 -> {len(df)}행 "
+          f"({n_before - len(df)}행 제외)")
+
     df = build_target(df)
     train, val, test = time_based_split(df)
 
@@ -152,7 +187,9 @@ def main():
         learning_rate=0.05,
         subsample=0.8,
         colsample_bytree=0.8,
-        enable_categorical=True,   # 종목코드를 category dtype 그대로 사용
+        reg_lambda=1.0,             # L2 정규화 - 기술지표 간 상관관계가 높아 과적합 위험 완화용으로 추가
+        enable_categorical=True,
+        early_stopping_rounds=20,  # val loss가 20라운드 개선 안 되면 조기종료 (지난번 200개를 다 쓴 문제 해결)
         random_state=42,
     )
     model.fit(
@@ -160,16 +197,28 @@ def main():
         eval_set=[(X_val, y_val)],
         verbose=False,
     )
+    print(f"실제 사용된 나무 개수: {model.best_iteration + 1} / {model.n_estimators} "
+          f"(조기종료 여부: {'예' if model.best_iteration + 1 < model.n_estimators else '아니오 - 200개 다 씀'})")
+
     model.save_model(OUTPUT_DIR / "xgb_model.json")
-    print(f"\n모델 저장 완료: {OUTPUT_DIR / 'xgb_model.json'}")
+    print(f"모델 저장 완료: {OUTPUT_DIR / 'xgb_model.json'}")
 
     val_pred = model.predict(X_val)
     test_pred = model.predict(X_test)
 
+    # 예측값을 저장해둠 - 다음에 재학습 없이도 이 결과로 바로 진단/재평가 가능
+    val[["날짜", "종목코드", "종가", "actual_next_close", "next_return", "news_score_missing"]].assign(
+        predicted_return=val_pred
+    ).to_csv(OUTPUT_DIR / "val_predictions.csv", index=False, encoding="utf-8-sig")
+    test[["날짜", "종목코드", "종가", "actual_next_close", "next_return", "news_score_missing"]].assign(
+        predicted_return=test_pred
+    ).to_csv(OUTPUT_DIR / "test_predictions.csv", index=False, encoding="utf-8-sig")
+
     results = [
         evaluate(val, val_pred, "Validation"),
-        evaluate(test, test_pred, "Test (최종, 한 번만 확인)"),
+        evaluate(test, test_pred, "Test (전체)"),
     ]
+    results += evaluate_by_news_coverage(test, test_pred, "Test")
     pd.DataFrame(results).to_csv(OUTPUT_DIR / "evaluation_results.csv", index=False, encoding="utf-8-sig")
 
     # ------------------------------------------------------------------
