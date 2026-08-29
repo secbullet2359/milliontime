@@ -19,14 +19,38 @@ Leave-One-Out 기사 단위 영향력 분석
 """
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent))
-from prepare_lstm_dataset import build_daily_calendar_embeddings, WINDOW_SIZE  # 동일 전처리 재사용
+WINDOW_SIZE = 7  # prepare_lstm_dataset.py와 반드시 동일한 값을 유지해야 함 (학습 때와 같은 윈도우 크기)
+
+
+def build_daily_calendar_embeddings(daily_emb: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    (prepare_lstm_dataset.py의 동일 함수를 그대로 복사해온 것 - 주피터 노트북 등에서
+     cross-file import가 불안정할 수 있어, 다른 파일에 의존하지 않도록 자체 포함시킴.
+     두 파일을 같이 수정할 일이 생기면 이 함수도 같이 맞춰줘야 함)
+
+    뉴스 임베딩을 달력일(매일) 기준으로 재정렬, 기사 없는 날은 0벡터+기사수0으로 채움.
+    """
+    daily_emb = daily_emb.copy()
+    daily_emb["날짜"] = pd.to_datetime(daily_emb["날짜"])
+    daily_emb = daily_emb.set_index("날짜").sort_index()
+
+    emb_cols = [c for c in daily_emb.columns if c.startswith("e")]
+
+    full_range = pd.date_range(daily_emb.index.min(), daily_emb.index.max(), freq="D")
+    daily_emb = daily_emb.reindex(full_range)
+    daily_emb[emb_cols] = daily_emb[emb_cols].fillna(0.0)
+    daily_emb["기사수"] = daily_emb["기사수"].fillna(0).astype(int)
+
+    print(f"뉴스 임베딩 달력일 재정렬: {len(daily_emb)}일 "
+          f"({daily_emb.index.min().date()} ~ {daily_emb.index.max().date()}), "
+          f"기사 0건인 날: {(daily_emb['기사수'] == 0).sum()}일")
+
+    return daily_emb, emb_cols
 
 DAILY_EMB_PATH = Path("/home/claude/news_collection/raw_data/embeddings/daily_news_embeddings.csv")
 ARTICLE_EMB_PATH = Path("/home/claude/news_collection/raw_data/embeddings/article_embeddings.npy")
