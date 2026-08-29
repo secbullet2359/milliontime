@@ -18,14 +18,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras.layers import Input, LSTM, Dense, Softmax
 from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 
+# TF/Keras 버전에 따라 register_keras_serializable의 위치가 다름
+#   - 최신(Keras 3, TF 2.13+): tensorflow.keras.saving
+#   - 예전(Keras 2 시절 API): tensorflow.keras.utils
+try:
+    from tensorflow.keras.saving import register_keras_serializable
+except (ImportError, AttributeError):
+    from tensorflow.keras.utils import register_keras_serializable
 
-@keras.saving.register_keras_serializable(package="AttentionLSTM")
-class WeightedSum(keras.layers.Layer):
+
+@register_keras_serializable(package="AttentionLSTM")
+class WeightedSum(tf.keras.layers.Layer):
     """
     lstm_out(batch,7,32)과 attention_weights(batch,7,1)를 받아 시간축(axis=1)으로
     가중합해서 context_vector(batch,32)를 만든다.
