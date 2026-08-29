@@ -24,6 +24,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TOLERANCE = 0.05          # ±5% 허용오차
 TRAIN_RATIO, VAL_RATIO = 0.70, 0.15   # 나머지 15%는 test
+TOP_K_FEATURES = 15       # 2단계에서 SHAP 상위 몇 개만 남겨서 재학습할지
 
 # ⚠ 뉴스 임베딩이 2026-04-02까지만 존재함 (daily_news_embeddings.parquet 확인 결과).
 #   그 이후 구간은 news_influence_score_per_stock이 통째로 결측이라, 평가가
@@ -141,6 +142,29 @@ def evaluate_by_news_coverage(df: pd.DataFrame, y_pred_return: np.ndarray, label
     return results
 
 
+def detailed_diagnostics(df: pd.DataFrame, y_pred_return: np.ndarray, label: str):
+    """
+    ±5% 적중률은 대부분의 날이 원래 그 안에서 움직여서 모델/베이스라인 차이가
+    잘 안 드러나는 무딘 지표임. 방향 적중률/상관관계/교차표로 더 세밀하게 확인.
+    """
+    actual_return = df["next_return"].values
+    direction_acc = (np.sign(y_pred_return) == np.sign(actual_return)).mean() * 100
+    corr = np.corrcoef(y_pred_return, actual_return)[0, 1]
+
+    predicted_close = df["종가"].values * (1 + y_pred_return)
+    actual_close = df["actual_next_close"].values
+    model_hit = np.abs(predicted_close - actual_close) / actual_close <= TOLERANCE
+    baseline_hit = np.abs(df["종가"].values - actual_close) / actual_close <= TOLERANCE
+
+    model_only = (model_hit & ~baseline_hit).sum()
+    baseline_only = (baseline_hit & ~model_hit).sum()
+
+    print(f"\n[{label}] 세부진단 - 방향적중률: {direction_acc:.2f}% (랜덤=50%), "
+          f"예측-실제 상관관계: {corr:.4f}")
+    print(f"  모델만 맞춤: {model_only}건 / 베이스라인만 맞춤: {baseline_only}건 "
+          f"/ 순수 우위: {model_only - baseline_only}건 (전체 {len(df)}건 중)")
+
+
 def evaluate(df: pd.DataFrame, y_pred_return: np.ndarray, label: str) -> dict:
     """±5% 적중률 + 베이스라인(전날 종가 유지) 비교."""
     predicted_close = df["종가"].values * (1 + y_pred_return)
@@ -160,6 +184,66 @@ def evaluate(df: pd.DataFrame, y_pred_return: np.ndarray, label: str) -> dict:
     return {"label": label, "accuracy": accuracy, "mape": mape, "baseline_accuracy": baseline_accuracy}
 
 
+def fit_and_evaluate(train, val, test, feature_cols, tag: str):
+    """
+    한 번의 학습+평가 사이클. tag별로 결과 파일이 겹치지 않게 접두어를 붙임.
+    (전체 feature로 한 번, SHAP 상위 K개로 한 번 - 이렇게 2번 호출해서 비교)
+    """
+    print(f"\n{'='*60}\n[{tag}] feature 수: {len(feature_cols)}\n{'='*60}")
+
+    X_train, y_train = train[feature_cols], train["next_return"]
+    X_val, y_val = val[feature_cols], val["next_return"]
+    X_test, y_test = test[feature_cols], test["next_return"]
+
+    model = xgb.XGBRegressor(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1.0,
+        enable_categorical=True,
+        early_stopping_rounds=20,
+        random_state=42,
+    )
+    model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+    print(f"실제 사용된 나무 개수: {model.best_iteration + 1} / {model.n_estimators} "
+          f"(조기종료 여부: {'예' if model.best_iteration + 1 < model.n_estimators else '아니오 - 다 씀'})")
+
+    model.save_model(OUTPUT_DIR / f"xgb_model_{tag}.json")
+
+    val_pred = model.predict(X_val)
+    test_pred = model.predict(X_test)
+
+    val[["날짜", "종목코드", "종가", "actual_next_close", "next_return", "news_score_missing"]].assign(
+        predicted_return=val_pred
+    ).to_csv(OUTPUT_DIR / f"val_predictions_{tag}.csv", index=False, encoding="utf-8-sig")
+    test[["날짜", "종목코드", "종가", "actual_next_close", "next_return", "news_score_missing"]].assign(
+        predicted_return=test_pred
+    ).to_csv(OUTPUT_DIR / f"test_predictions_{tag}.csv", index=False, encoding="utf-8-sig")
+
+    results = [
+        evaluate(val, val_pred, f"[{tag}] Validation"),
+        evaluate(test, test_pred, f"[{tag}] Test (전체)"),
+    ]
+    detailed_diagnostics(val, val_pred, f"[{tag}] Validation")
+    detailed_diagnostics(test, test_pred, f"[{tag}] Test")
+
+    import shap
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_val)
+    mean_abs_shap = pd.Series(
+        np.abs(shap_values).mean(axis=0), index=feature_cols
+    ).sort_values(ascending=False)
+    mean_abs_shap.to_csv(OUTPUT_DIR / f"shap_feature_importance_{tag}.csv", encoding="utf-8-sig")
+    np.save(OUTPUT_DIR / f"shap_values_val_{tag}.npy", shap_values)
+
+    print(f"\n[{tag}] SHAP 기준 변수 중요도 Top 10:")
+    print(mean_abs_shap.head(10))
+
+    return {"results": results, "mean_abs_shap": mean_abs_shap}
+
+
 def main():
     print(f"입력 로딩: {INPUT_PATH}")
     df = load_input(INPUT_PATH)
@@ -174,71 +258,33 @@ def main():
     df = build_target(df)
     train, val, test = time_based_split(df)
 
-    feature_cols = [c for c in df.columns if c not in DROP_COLS + ["next_return", "actual_next_close"]]
-    print(f"\n학습에 사용할 feature 수: {len(feature_cols)}")
-
-    X_train, y_train = train[feature_cols], train["next_return"]
-    X_val, y_val = val[feature_cols], val["next_return"]
-    X_test, y_test = test[feature_cols], test["next_return"]
-
-    model = xgb.XGBRegressor(
-        n_estimators=200,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_lambda=1.0,             # L2 정규화 - 기술지표 간 상관관계가 높아 과적합 위험 완화용으로 추가
-        enable_categorical=True,
-        early_stopping_rounds=20,  # val loss가 20라운드 개선 안 되면 조기종료 (지난번 200개를 다 쓴 문제 해결)
-        random_state=42,
-    )
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)],
-        verbose=False,
-    )
-    print(f"실제 사용된 나무 개수: {model.best_iteration + 1} / {model.n_estimators} "
-          f"(조기종료 여부: {'예' if model.best_iteration + 1 < model.n_estimators else '아니오 - 200개 다 씀'})")
-
-    model.save_model(OUTPUT_DIR / "xgb_model.json")
-    print(f"모델 저장 완료: {OUTPUT_DIR / 'xgb_model.json'}")
-
-    val_pred = model.predict(X_val)
-    test_pred = model.predict(X_test)
-
-    # 예측값을 저장해둠 - 다음에 재학습 없이도 이 결과로 바로 진단/재평가 가능
-    val[["날짜", "종목코드", "종가", "actual_next_close", "next_return", "news_score_missing"]].assign(
-        predicted_return=val_pred
-    ).to_csv(OUTPUT_DIR / "val_predictions.csv", index=False, encoding="utf-8-sig")
-    test[["날짜", "종목코드", "종가", "actual_next_close", "next_return", "news_score_missing"]].assign(
-        predicted_return=test_pred
-    ).to_csv(OUTPUT_DIR / "test_predictions.csv", index=False, encoding="utf-8-sig")
-
-    results = [
-        evaluate(val, val_pred, "Validation"),
-        evaluate(test, test_pred, "Test (전체)"),
-    ]
-    results += evaluate_by_news_coverage(test, test_pred, "Test")
-    pd.DataFrame(results).to_csv(OUTPUT_DIR / "evaluation_results.csv", index=False, encoding="utf-8-sig")
+    all_feature_cols = [c for c in df.columns if c not in DROP_COLS + ["next_return", "actual_next_close"]]
 
     # ------------------------------------------------------------------
-    # SHAP 분석 (validation set 기준 - test는 최종 확인 전까지 아껴둠)
+    # 1단계: 전체 feature로 학습 -> SHAP 중요도 확인
     # ------------------------------------------------------------------
-    import shap
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X_val)
+    full_run = fit_and_evaluate(train, val, test, all_feature_cols, tag="full")
 
-    mean_abs_shap = pd.Series(
-        np.abs(shap_values).mean(axis=0), index=feature_cols
-    ).sort_values(ascending=False)
+    # ------------------------------------------------------------------
+    # 2단계: SHAP 상위 TOP_K_FEATURES개만 남겨서 재학습 (반드시 '종목코드'는 유지 -
+    #         카테고리 정체성 정보라 별도 취급, 상위 K에 없어도 강제로 포함)
+    # ------------------------------------------------------------------
+    top_features = full_run["mean_abs_shap"].head(TOP_K_FEATURES).index.tolist()
+    if "종목코드" not in top_features:
+        top_features.append("종목코드")
+    print(f"\n2단계에 사용할 feature ({len(top_features)}개): {top_features}")
 
-    print("\n=== SHAP 기준 변수 중요도 Top 15 ===")
-    print(mean_abs_shap.head(15))
-    mean_abs_shap.to_csv(OUTPUT_DIR / "shap_feature_importance.csv", encoding="utf-8-sig")
+    pruned_run = fit_and_evaluate(train, val, test, top_features, tag="pruned")
 
-    np.save(OUTPUT_DIR / "shap_values_val.npy", shap_values)
-    print(f"\nSHAP 값 저장 완료: {OUTPUT_DIR / 'shap_values_val.npy'} "
-          f"(shape: {shap_values.shape}, X_val과 같은 행 순서)")
+    # ------------------------------------------------------------------
+    # 두 결과 비교
+    # ------------------------------------------------------------------
+    all_results = full_run["results"] + pruned_run["results"]
+    result_df = pd.DataFrame(all_results)
+    result_df.to_csv(OUTPUT_DIR / "evaluation_results_comparison.csv", index=False, encoding="utf-8-sig")
+
+    print(f"\n{'='*60}\n=== 전체 feature(full) vs 상위 {TOP_K_FEATURES}개(pruned) 비교 ===\n{'='*60}")
+    print(result_df[["label", "accuracy", "baseline_accuracy", "mape"]].to_string(index=False))
 
 
 if __name__ == "__main__":
