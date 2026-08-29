@@ -27,6 +27,23 @@ import pandas as pd
 WINDOW_SIZE = 7  # prepare_lstm_dataset.py와 반드시 동일한 값을 유지해야 함 (학습 때와 같은 윈도우 크기)
 
 
+def load_daily_embeddings_raw(path: Path) -> pd.DataFrame:
+    """
+    daily_news_embeddings 파일 로더. parquet이 기본이지만, 확장자가 .csv이거나
+    pyarrow/fastparquet이 없는 환경이면 CSV로도 시도.
+    """
+    if path.suffix == ".parquet":
+        try:
+            return pd.read_parquet(path)
+        except ImportError:
+            csv_alt = path.with_suffix(".csv")
+            if csv_alt.exists():
+                print(f"⚠ parquet 리더(pyarrow 등)가 없어 {csv_alt.name}로 대체 로딩")
+                return pd.read_csv(csv_alt)
+            raise
+    return pd.read_csv(path)
+
+
 def build_daily_calendar_embeddings(daily_emb: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """
     (prepare_lstm_dataset.py의 동일 함수를 그대로 복사해온 것 - 주피터 노트북 등에서
@@ -52,7 +69,7 @@ def build_daily_calendar_embeddings(daily_emb: pd.DataFrame) -> tuple[pd.DataFra
 
     return daily_emb, emb_cols
 
-DAILY_EMB_PATH = Path("/home/claude/news_collection/raw_data/embeddings/daily_news_embeddings.csv")
+DAILY_EMB_PATH = Path("/home/claude/news_collection/raw_data/embeddings/daily_news_embeddings.parquet")
 ARTICLE_EMB_PATH = Path("/home/claude/news_collection/raw_data/embeddings/article_embeddings.npy")
 ARTICLE_META_PATH = Path("/home/claude/news_collection/raw_data/embeddings/article_meta.csv")
 MODEL_PATH = Path("/home/claude/news_collection/raw_data/lstm_output/attention_lstm_model.keras")
@@ -138,7 +155,7 @@ def analyze_date(target_date_str: str, stock_code: str, top_n: int = 5):
         raise ValueError(f"'{stock_code}'가 stock_order에 없습니다.")
     stock_idx = stock_order.index(stock_code)
 
-    daily_emb_raw = pd.read_csv(DAILY_EMB_PATH)
+    daily_emb_raw = load_daily_embeddings_raw(DAILY_EMB_PATH)
     daily_emb, emb_cols = build_daily_calendar_embeddings(daily_emb_raw)
     article_meta = pd.read_csv(ARTICLE_META_PATH, parse_dates=["일자"])
     article_emb = np.load(ARTICLE_EMB_PATH)
@@ -185,7 +202,7 @@ def run_full_analysis():
     from tensorflow.keras.models import load_model
 
     stock_order = load_stock_order()
-    daily_emb_raw = pd.read_csv(DAILY_EMB_PATH)
+    daily_emb_raw = load_daily_embeddings_raw(DAILY_EMB_PATH)
     daily_emb, emb_cols = build_daily_calendar_embeddings(daily_emb_raw)
     article_meta = pd.read_csv(ARTICLE_META_PATH, parse_dates=["일자"])
     article_emb = np.load(ARTICLE_EMB_PATH)
