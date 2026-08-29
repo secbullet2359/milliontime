@@ -18,8 +18,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow import keras
 from tensorflow.keras.layers import Input, LSTM, Dense, Softmax
 from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+
+
+@keras.saving.register_keras_serializable(package="AttentionLSTM")
+class WeightedSum(keras.layers.Layer):
+    """
+    lstm_out(batch,7,32)과 attention_weights(batch,7,1)를 받아 시간축(axis=1)으로
+    가중합해서 context_vector(batch,32)를 만든다.
+    ⚠ tf.reduce_sum(...)을 함수형 API에 직접 쓰면 모델을 .keras로 저장했다가
+    다시 불러올 때 "Could not locate function" 에러가 남 (익명 연산이라 복원 불가).
+    정식 Layer로 등록해두면 저장/로딩이 안정적으로 됨.
+    """
+    def call(self, inputs):
+        lstm_out, attention_weights = inputs
+        return tf.reduce_sum(lstm_out * attention_weights, axis=1)
 
 INPUT_DIR = Path("/home/claude/news_collection/raw_data/lstm_input")
 OUTPUT_DIR = Path("/home/claude/news_collection/raw_data/lstm_output")
@@ -50,7 +66,7 @@ def build_model(num_stocks: int, window_size: int = WINDOW_SIZE,
     attention_scores = Dense(1, activation="tanh")(lstm_out)                 # (batch, 7, 1)
     attention_weights = Softmax(axis=1, name="attention_weights")(attention_scores)
 
-    context_vector = tf.reduce_sum(lstm_out * attention_weights, axis=1)     # (batch, 32) - 종목 공통
+    context_vector = WeightedSum()([lstm_out, attention_weights])           # (batch, 32) - 종목 공통
 
     # 여기서부터 종목별로 분기: Dense(num_stocks)의 각 출력 유닛이
     # "이 종목은 공유된 뉴스 표현을 이렇게 반영한다"는 자기만의 가중치를 가짐
@@ -85,13 +101,29 @@ def main():
     model = build_model(num_stocks=num_stocks)
     model.summary()
 
+    callbacks = [
+        # validation loss가 5 epoch 동안 개선 없으면 조기종료
+        # (30 epoch을 다 안 채워도 되니, 예상보다 오래 걸릴 걱정을 줄여줌)
+        EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=1),
+        # 매 epoch마다 저장 -> 중간에 끊겨도 마지막으로 저장된 지점부터 다시 볼 수 있음
+        ModelCheckpoint(
+            OUTPUT_DIR / "attention_lstm_checkpoint.keras",
+            save_best_only=True, monitor="val_loss", verbose=0,
+        ),
+    ]
+
+    import time
+    start = time.time()
     history = model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
+        callbacks=callbacks,
         verbose=2,
     )
+    print(f"\n학습 소요 시간: {time.time() - start:.1f}초 "
+          f"(실제 진행된 epoch 수: {len(history.history['loss'])}/{EPOCHS})")
 
     model.save(OUTPUT_DIR / "attention_lstm_model.keras")
     print(f"\n모델 저장 완료: {OUTPUT_DIR / 'attention_lstm_model.keras'}")
