@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-INPUT_PATH = Path("/home/claude/news_collection/raw_data/merged_dataset_with_news.csv")
+INPUT_PATH = Path("/home/claude/news_collection/raw_data/merged_dataset_with_news_macro_dart.csv")
 OUTPUT_DIR = Path("/home/claude/news_collection/raw_data/xgb_output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -142,6 +142,26 @@ def evaluate_by_news_coverage(df: pd.DataFrame, y_pred_return: np.ndarray, label
     return results
 
 
+def evaluate_by_news_strength(df: pd.DataFrame, y_pred_return: np.ndarray, label: str):
+    """
+    news_influence_score_per_stock의 절댓값이 큰 날(뉴스 신호가 강한 날) vs
+    작은 날(신호가 거의 없는 날)로 나눠서 모델이 특히 어디서 유효한지 확인.
+    (SHAP에서 이 변수가 압도적 1위로 나왔다면, 신호가 강한 구간에서
+     모델-베이스라인 격차가 더 뚜렷하게 드러나야 앞뒤가 맞음)
+    """
+    score_abs = df["news_influence_score_per_stock"].abs()
+    tertile_high = score_abs >= score_abs.quantile(2/3)
+    tertile_low = score_abs <= score_abs.quantile(1/3)
+
+    results = []
+    for sub_label, mask in [("뉴스신호 강함(상위1/3)", tertile_high), ("뉴스신호 약함(하위1/3)", tertile_low)]:
+        sub_df = df[mask]
+        sub_pred = y_pred_return[mask.values]
+        results.append(evaluate(sub_df, sub_pred, f"{label} - {sub_label}"))
+        detailed_diagnostics(sub_df, sub_pred, f"{label} - {sub_label}")
+    return results
+
+
 def detailed_diagnostics(df: pd.DataFrame, y_pred_return: np.ndarray, label: str):
     """
     ±5% 적중률은 대부분의 날이 원래 그 안에서 움직여서 모델/베이스라인 차이가
@@ -228,6 +248,7 @@ def fit_and_evaluate(train, val, test, feature_cols, tag: str):
     ]
     detailed_diagnostics(val, val_pred, f"[{tag}] Validation")
     detailed_diagnostics(test, test_pred, f"[{tag}] Test")
+    results += evaluate_by_news_strength(test, test_pred, f"[{tag}] Test")
 
     import shap
     explainer = shap.TreeExplainer(model)
