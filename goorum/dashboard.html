@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>예측 요인 대시보드</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root {
+    --bg: #14171c;
+    --panel: #1b1f28;
+    --panel-2: #20242f;
+    --border: #2a2f3a;
+    --text: #e8e6e1;
+    --text-dim: #8b8f98;
+    --up: #e3a857;
+    --down: #c1666b;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    padding: 28px 32px 40px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+  }
+  h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: 0.2px; }
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .file-btn {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  .file-btn:hover { border-color: var(--up); }
+  select#stockSelect {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 7px 10px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  #fileInput { display: none; }
+  .layout { display: grid; grid-template-columns: 1.55fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; }
+  .panel h2 {
+    font-size: 12.5px; font-weight: 600; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.6px; margin: 0 0 14px;
+  }
+  #chartWrap { height: 320px; }
+  #emptyState {
+    height: 320px; display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 13px; text-align: center; line-height: 1.7;
+  }
+  .slider-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+  input[type=range] { flex: 1; accent-color: var(--up); }
+  .date-label { font-family: var(--mono); font-size: 13px; min-width: 88px; text-align: right; }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .stat .k { font-size: 10.5px; color: var(--text-dim); margin-bottom: 4px; }
+  .stat .v { font-family: var(--mono); font-size: 15px; }
+  .stat .v.up { color: var(--up); }
+  .stat .v.down { color: var(--down); }
+  .factor-row { display: grid; grid-template-columns: 150px 1fr 70px; align-items: center; gap: 10px; margin-bottom: 7px; font-size: 12.5px; }
+  .factor-name { font-family: var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .factor-bar-track { position: relative; height: 14px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  .factor-bar { position: absolute; top: 0; bottom: 0; }
+  .factor-val { font-family: var(--mono); text-align: right; }
+  .note { margin-top: 20px; font-size: 11.5px; color: var(--text-dim); line-height: 1.6; border-top: 1px solid var(--border); padding-top: 14px; }
+  .hint { font-size: 12px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="titleText">예측 요인 대시보드</h1>
+  <div class="controls">
+    <select id="stockSelect" style="display:none;"></select>
+    <label class="file-btn" for="fileInput">CSV 파일 열기 (여러 개 선택 가능)</label>
+    <input type="file" id="fileInput" accept=".csv" multiple>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="panel">
+    <h2>실제 종가 vs 전날 예측된 종가</h2>
+    <div id="emptyState">
+      export_dashboard_csv.py로 만든 dashboard_&lt;종목코드&gt;.csv 파일을<br>
+      위 "CSV 파일 열기"로 선택해주세요. (여러 종목 동시 선택 가능)
+    </div>
+    <div id="chartWrap" style="display:none;"><canvas id="priceChart"></canvas></div>
+    <div class="slider-row" id="sliderRow" style="display:none;">
+      <input type="range" id="dateSlider" min="0" max="0" value="0">
+      <div class="date-label" id="dateLabel">-</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>선택한 날짜 상세</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="k">실제 종가</div><div class="v" id="statActual">-</div></div>
+      <div class="stat"><div class="k">전날 예측 종가</div><div class="v" id="statPred">-</div></div>
+      <div class="stat"><div class="k">오차</div><div class="v" id="statErr">-</div></div>
+    </div>
+    <h2>이 예측에 가장 크게 기여한 변수 (SHAP)</h2>
+    <div id="factorList"><div class="hint">데이터를 불러오면 표시됩니다.</div></div>
+  </div>
+</div>
+
+<div class="note">
+  라인차트의 "전날 예측 종가"는 하루 전 데이터로 만든 예측을 다음날 실제 종가와 같은 x축 위치에 겹쳐 그린 것입니다.
+  SHAP 값이 양수(앰버)면 그 변수가 예측 수익률을 밀어올린 방향, 음수(로즈)면 끌어내린 방향입니다.
+  CSV는 export_dashboard_csv.py로 만든 파일(날짜, 종목코드, 종가, actual_next_close, predicted_return, shap__&lt;변수명&gt;...)만 지원합니다.
+</div>
+
+<script>
+let chart = null;
+const stocks = {}; // { 종목코드: points[] }
+
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const files = Array.from(e.target.files);
+  let loaded = 0;
+  files.forEach(file => {
+    Papa.parse(file, {
+      header: true,
+      dynamicTyping: true,
+      skipEmptyLines: true,
+      complete: (result) => {
+        const rows = result.data;
+        if (!rows.length || !('날짜' in rows[0])) {
+          alert(`${file.name}: 예상한 컬럼(날짜 등)이 없습니다. export_dashboard_csv.py 결과물인지 확인하세요.`);
+          return;
+        }
+        const shapCols = Object.keys(rows[0]).filter(k => k.startsWith('shap__'));
+        const stockCode = String(rows[0]['종목코드'] ?? file.name.replace(/\D/g, '')).padStart(6, '0');
+
+        const points = rows.map(r => {
+          const factors = shapCols
+            .map(c => ({ name: c.replace('shap__', ''), value: Number(r[c]) }))
+            .filter(f => !isNaN(f.value))
+            .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+            .slice(0, 8);
+          return {
+            date: r['날짜'],
+            close: Number(r['종가']),
+            predictedReturn: Number(r['predicted_return']),
+            factors,
+          };
+        });
+        // predClose는 여기서 계산 (predicted_return -> 종가 환산)
+        points.forEach(p => { p.predClose = p.close * (1 + p.predictedReturn); });
+
+        stocks[stockCode] = points;
+        loaded++;
+        if (loaded === files.length) refreshStockSelector();
+      },
+    });
+  });
+});
+
+function refreshStockSelector() {
+  const sel = document.getElementById('stockSelect');
+  sel.innerHTML = '';
+  Object.keys(stocks).sort().forEach(code => {
+    const opt = document.createElement('option');
+    opt.value = code;
+    opt.textContent = code;
+    sel.appendChild(opt);
+  });
+  sel.style.display = 'inline-block';
+  sel.onchange = () => loadStock(sel.value);
+  loadStock(sel.value);
+}
+
+function loadStock(code) {
+  document.getElementById('titleText').textContent = code + ' · 예측 요인 대시보드';
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('chartWrap').style.display = 'block';
+  document.getElementById('sliderRow').style.display = 'flex';
+
+  const raw = stocks[code];
+  const points = raw.map((r, i) => ({
+    date: r.date,
+    actualClose: r.close,
+    predictedForThisDate: i > 0 ? raw[i - 1].predClose : null,
+    factorsForThisPrediction: i > 0 ? raw[i - 1].factors : null,
+  }));
+
+  if (chart) chart.destroy();
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: points.map(p => p.date),
+      datasets: [
+        { label: '실제 종가', data: points.map(p => p.actualClose), borderColor: '#e8e6e1', backgroundColor: 'transparent', borderWidth: 1.6, pointRadius: 0, tension: 0.15 },
+        { label: '전날 예측 종가', data: points.map(p => p.predictedForThisDate), borderColor: '#e3a857', backgroundColor: 'transparent', borderWidth: 1.4, borderDash: [3, 3], pointRadius: 0, tension: 0.15 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#8b8f98', font: { family: 'monospace', size: 11 } } },
+        tooltip: { backgroundColor: '#20242f', titleColor: '#e8e6e1', bodyColor: '#e8e6e1', borderColor: '#2a2f3a', borderWidth: 1 },
+      },
+      scales: {
+        x: { ticks: { color: '#8b8f98', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: '#2a2f3a' } },
+        y: { ticks: { color: '#8b8f98', font: { size: 10 } }, grid: { color: '#2a2f3a' } },
+      },
+      onClick: (evt) => {
+        const els = chart.getElementsAtEventForMode(evt, 'index', { intersect: false }, true);
+        if (els.length) setIndex(els[0].index);
+      },
+    },
+  });
+
+  const slider = document.getElementById('dateSlider');
+  slider.max = points.length - 1;
+  slider.value = points.length - 1;
+  slider.oninput = () => setIndex(+slider.value);
+
+  window._points = points;
+  setIndex(points.length - 1);
+}
+
+function fmt(n) {
+  if (n === null || n === undefined || isNaN(n)) return '-';
+  return Math.round(n).toLocaleString('ko-KR');
+}
+
+function setIndex(i) {
+  const points = window._points;
+  document.getElementById('dateSlider').value = i;
+  const p = points[i];
+  document.getElementById('dateLabel').textContent = p.date;
+  document.getElementById('statActual').textContent = fmt(p.actualClose);
+
+  const predEl = document.getElementById('statPred');
+  const errEl = document.getElementById('statErr');
+  const listEl = document.getElementById('factorList');
+
+  if (p.predictedForThisDate === null) {
+    predEl.textContent = '-';
+    errEl.textContent = '-';
+    listEl.innerHTML = '<div class="hint">첫 날은 이전 데이터가 없어 예측이 없습니다.</div>';
+    return;
+  }
+
+  predEl.textContent = fmt(p.predictedForThisDate);
+  predEl.className = 'v';
+  const err = p.actualClose - p.predictedForThisDate;
+  const errPct = (err / p.actualClose * 100);
+  errEl.textContent = (err >= 0 ? '+' : '') + fmt(err) + ' (' + errPct.toFixed(2) + '%)';
+  errEl.className = 'v ' + (Math.abs(errPct) <= 5 ? 'up' : 'down');
+
+  const factors = p.factorsForThisPrediction || [];
+  const maxAbs = Math.max(...factors.map(f => Math.abs(f.value)), 1e-9);
+  listEl.innerHTML = factors.map(f => {
+    const pct = Math.abs(f.value) / maxAbs * 100;
+    const positive = f.value >= 0;
+    const color = positive ? '#e3a857' : '#c1666b';
+    const left = positive ? '50%' : (50 - pct / 2) + '%';
+    const width = pct / 2 + '%';
+    return `
+      <div class="factor-row">
+        <div class="factor-name" title="${f.name}">${f.name}</div>
+        <div class="factor-bar-track"><div class="factor-bar" style="left:${left};width:${width};background:${color};"></div></div>
+        <div class="factor-val" style="color:${color}">${f.value.toFixed(5)}</div>
+      </div>`;
+  }).join('');
+}
+</script>
+</body>
+</html>
