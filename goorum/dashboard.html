@@ -85,6 +85,24 @@
   .factor-val { font-family: var(--mono); text-align: right; }
   .note { margin-top: 20px; font-size: 11.5px; color: var(--text-dim); line-height: 1.6; border-top: 1px solid var(--border); padding-top: 14px; }
   .hint { font-size: 12px; color: var(--text-dim); }
+
+  .news-panel { margin-top: 20px; }
+  .news-panel h2 span.day { color: var(--up); font-family: var(--mono); font-weight: normal; text-transform: none; letter-spacing: 0; }
+  .news-item {
+    display: grid;
+    grid-template-columns: 28px 1fr 90px;
+    gap: 10px;
+    align-items: start;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .news-item:last-child { border-bottom: none; }
+  .news-rank { font-family: var(--mono); color: var(--text-dim); font-size: 12px; padding-top: 2px; }
+  .news-title { font-size: 13px; line-height: 1.4; }
+  .news-title a { color: var(--text); text-decoration: none; }
+  .news-title a:hover { color: var(--up); text-decoration: underline; }
+  .news-press { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .news-impact { font-family: var(--mono); font-size: 12.5px; text-align: right; padding-top: 2px; }
 </style>
 </head>
 <body>
@@ -93,7 +111,7 @@
   <h1 id="titleText">예측 요인 대시보드</h1>
   <div class="controls">
     <select id="stockSelect" style="display:none;"></select>
-    <label class="file-btn" for="fileInput">CSV 파일 열기 (여러 개 선택 가능)</label>
+    <label class="file-btn" for="fileInput">CSV 파일 열기 (가격+SHAP, 뉴스랭킹 함께 선택 가능)</label>
     <input type="file" id="fileInput" accept=".csv" multiple>
   </div>
 </header>
@@ -127,30 +145,58 @@
 <div class="note">
   라인차트의 "전날 예측 종가"는 하루 전 데이터로 만든 예측을 다음날 실제 종가와 같은 x축 위치에 겹쳐 그린 것입니다.
   SHAP 값이 양수(앰버)면 그 변수가 예측 수익률을 밀어올린 방향, 음수(로즈)면 끌어내린 방향입니다.
-  CSV는 export_dashboard_csv.py로 만든 파일(날짜, 종목코드, 종가, actual_next_close, predicted_return, shap__&lt;변수명&gt;...)만 지원합니다.
+  CSV는 export_dashboard_csv.py / export_dashboard_news.py로 만든 파일만 지원합니다.
+</div>
+
+<div class="panel news-panel">
+  <h2 id="newsPanelTitle">뉴스 기사 영향력 랭킹</h2>
+  <div id="newsList"><div class="hint">export_dashboard_news.py로 만든 dashboard_news_&lt;종목코드&gt;.csv를 같이 선택하면 표시됩니다.</div></div>
 </div>
 
 <script>
 let stockPoints = null; // 현재 선택된 종목의 points 배열
-const stocks = {}; // { 종목코드: rawPoints[] }
+const stocks = {};      // { 종목코드: rawPoints[] }
+const stockNames = {};  // { 종목코드: 종목명 }
+const newsData = {};    // { 종목코드: { 예측대상일: [{제목,언론사,URL,impact,중요일}, ...] } }
 
 // ------------------------------------------------------------------
-// 순수 JS CSV 파서 (외부 라이브러리 없이) - 이 CSV는 값에 쉼표/줄바꿈이
-// 섞일 일이 없는 단순 수치/날짜 데이터라 split 기반으로 충분함
+// CSV 파서 (외부 라이브러리 없이) - RFC4180 인용규칙 지원.
+// 뉴스 제목처럼 쉼표/따옴표/줄바꿈이 섞인 자유 텍스트 필드가 있어서
+// 단순 split(',')로는 안 되고, 문자 단위로 인용 상태를 추적해야 함.
 // ------------------------------------------------------------------
 function parseCSV(text) {
-  text = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
-  const lines = text.split('\n');
-  const headers = lines[0].split(',');
+  text = text.replace(/^\uFEFF/, '');
   const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i]) continue;
-    const vals = lines[i].split(',');
-    const obj = {};
-    headers.forEach((h, j) => { obj[h] = vals[j]; });
-    rows.push(obj);
+  let row = [], field = '', inQuotes = false;
+  let i = 0;
+  const len = text.length;
+
+  while (i < len) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++; continue;
+    } else {
+      if (c === '"') { inQuotes = true; i++; continue; }
+      if (c === ',') { row.push(field); field = ''; i++; continue; }
+      if (c === '\r') { i++; continue; }
+      if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+      field += c; i++; continue;
+    }
   }
-  return { headers, rows };
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  while (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') rows.pop();
+
+  const headers = rows[0] || [];
+  const dataRows = rows.slice(1).map(r => {
+    const obj = {};
+    headers.forEach((h, j) => { obj[h] = r[j]; });
+    return obj;
+  });
+  return { headers, rows: dataRows };
 }
 
 document.getElementById('fileInput').addEventListener('change', (e) => {
@@ -161,30 +207,18 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
     reader.onload = (evt) => {
       try {
         const { headers, rows } = parseCSV(evt.target.result);
-        if (!rows.length || !('날짜' in rows[0])) {
-          alert(`${file.name}: 예상한 컬럼(날짜 등)이 없습니다. export_dashboard_csv.py 결과물인지 확인하세요.`);
-          return;
+        if (!rows.length) { alert(`${file.name}: 빈 파일입니다.`); return; }
+
+        const isNewsFile = headers.includes('제목') && headers.includes('impact');
+        const isPriceFile = headers.includes('종가') && headers.includes('predicted_return');
+
+        if (isNewsFile) {
+          loadNewsFile(headers, rows, file.name);
+        } else if (isPriceFile) {
+          loadPriceFile(headers, rows, file.name);
+        } else {
+          alert(`${file.name}: 가격/SHAP 파일도 뉴스랭킹 파일도 아닌 것 같습니다. export_dashboard_csv.py 또는 export_dashboard_news.py 결과물인지 확인하세요.`);
         }
-        const shapCols = headers.filter(h => h.startsWith('shap__'));
-        const rawCode = (rows[0]['종목코드'] || file.name.replace(/\D/g, ''));
-        const stockCode = String(rawCode).padStart(6, '0');
-
-        const points = rows.map(r => {
-          const factors = shapCols
-            .map(c => ({ name: c.replace('shap__', ''), value: Number(r[c]) }))
-            .filter(f => !isNaN(f.value))
-            .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
-            .slice(0, 8);
-          return {
-            date: r['날짜'],
-            close: Number(r['종가']),
-            predictedReturn: Number(r['predicted_return']),
-            factors,
-          };
-        });
-        points.forEach(p => { p.predClose = p.close * (1 + p.predictedReturn); });
-
-        stocks[stockCode] = points;
       } catch (err) {
         alert(`${file.name} 처리 중 오류: ${err.message}`);
       } finally {
@@ -197,22 +231,69 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
   });
 });
 
+function loadPriceFile(headers, rows, filename) {
+  const shapCols = headers.filter(h => h.startsWith('shap__'));
+  const rawCode = (rows[0]['종목코드'] || filename.replace(/\D/g, ''));
+  const stockCode = String(rawCode).padStart(6, '0');
+  if (rows[0]['종목명']) stockNames[stockCode] = rows[0]['종목명'];
+
+  const points = rows.map(r => {
+    const factors = shapCols
+      .map(c => ({ name: c.replace('shap__', ''), value: Number(r[c]) }))
+      .filter(f => !isNaN(f.value))
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+      .slice(0, 8);
+    return {
+      date: r['날짜'],
+      close: Number(r['종가']),
+      predictedReturn: Number(r['predicted_return']),
+      factors,
+    };
+  });
+  points.forEach(p => { p.predClose = p.close * (1 + p.predictedReturn); });
+  stocks[stockCode] = points;
+}
+
+function loadNewsFile(headers, rows, filename) {
+  const rawCode = (rows[0]['종목코드'] || filename.replace(/\D/g, ''));
+  const stockCode = String(rawCode).padStart(6, '0');
+
+  const byDate = {};
+  rows.forEach(r => {
+    const d = r['예측대상일'];
+    if (!byDate[d]) byDate[d] = [];
+    byDate[d].push({
+      제목: r['제목'],
+      언론사: r['언론사'],
+      URL: r['URL'] || '',
+      impact: Number(r['impact']),
+      중요일: r['중요일'],
+    });
+  });
+  Object.values(byDate).forEach(list => list.sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact)));
+  newsData[stockCode] = byDate;
+}
+
 function refreshStockSelector() {
   const sel = document.getElementById('stockSelect');
   sel.innerHTML = '';
   Object.keys(stocks).sort().forEach(code => {
     const opt = document.createElement('option');
     opt.value = code;
-    opt.textContent = code;
+    const name = stockNames[code] ? ` ${stockNames[code]}` : '';
+    opt.textContent = code + name;
     sel.appendChild(opt);
   });
-  sel.style.display = 'inline-block';
-  sel.onchange = () => loadStock(sel.value);
-  loadStock(sel.value);
+  if (Object.keys(stocks).length) {
+    sel.style.display = 'inline-block';
+    sel.onchange = () => loadStock(sel.value);
+    loadStock(sel.value);
+  }
 }
 
 function loadStock(code) {
-  document.getElementById('titleText').textContent = code + ' · 예측 요인 대시보드';
+  const name = stockNames[code] ? ' ' + stockNames[code] : '';
+  document.getElementById('titleText').textContent = code + name + ' · 예측 요인 대시보드';
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('chartWrap').style.display = 'block';
   document.getElementById('sliderRow').style.display = 'flex';
@@ -223,7 +304,9 @@ function loadStock(code) {
     actualClose: r.close,
     predictedForThisDate: i > 0 ? raw[i - 1].predClose : null,
     factorsForThisPrediction: i > 0 ? raw[i - 1].factors : null,
+    madeOnDate: i > 0 ? raw[i - 1].date : null,  // 뉴스랭킹 조인용 (예측대상일과 매칭)
   }));
+  window._currentCode = code;
 
   const slider = document.getElementById('dateSlider');
   slider.max = stockPoints.length - 1;
@@ -352,6 +435,7 @@ function setIndex(i) {
     predEl.textContent = '-';
     errEl.textContent = '-';
     listEl.innerHTML = '<div class="hint">첫 날은 이전 데이터가 없어 예측이 없습니다.</div>';
+    renderNewsPanel(null);
     return;
   }
 
@@ -375,6 +459,54 @@ function setIndex(i) {
         <div class="factor-name" title="${f.name}">${f.name}</div>
         <div class="factor-bar-track"><div class="factor-bar" style="left:${left};width:${width};background:${color};"></div></div>
         <div class="factor-val" style="color:${color}">${f.value.toFixed(5)}</div>
+      </div>`;
+  }).join('');
+
+  renderNewsPanel(p.madeOnDate);
+}
+
+function renderNewsPanel(madeOnDate) {
+  const titleEl = document.getElementById('newsPanelTitle');
+  const listEl = document.getElementById('newsList');
+  const code = window._currentCode;
+  const dataForStock = newsData[code];
+
+  if (!dataForStock) {
+    titleEl.textContent = '뉴스 기사 영향력 랭킹';
+    listEl.innerHTML = '<div class="hint">export_dashboard_news.py로 만든 dashboard_news_&lt;종목코드&gt;.csv를 같이 선택하면 표시됩니다.</div>';
+    return;
+  }
+  if (madeOnDate === null) {
+    titleEl.textContent = '뉴스 기사 영향력 랭킹';
+    listEl.innerHTML = '<div class="hint">첫 날은 예측이 없어 관련 뉴스도 없습니다.</div>';
+    return;
+  }
+
+  const articles = dataForStock[madeOnDate];
+  if (!articles || !articles.length) {
+    titleEl.textContent = `뉴스 기사 영향력 랭킹 (${madeOnDate} 예측 관련 데이터 없음)`;
+    listEl.innerHTML = '<div class="hint">이 날짜에 해당하는 뉴스랭킹 데이터가 없습니다.</div>';
+    return;
+  }
+
+  const importantDay = articles[0]['중요일'];
+  titleEl.innerHTML = `${madeOnDate} 예측에 사용된 뉴스 <span class="day">(중요일: ${importantDay})</span>`;
+
+  const maxAbs = Math.max(...articles.map(a => Math.abs(a.impact)), 1e-9);
+  listEl.innerHTML = articles.map((a, idx) => {
+    const positive = a.impact >= 0;
+    const color = positive ? '#e3a857' : '#c1666b';
+    const titleHtml = a.URL
+      ? `<a href="${a.URL}" target="_blank" rel="noopener">${a.제목}</a>`
+      : a.제목;
+    return `
+      <div class="news-item">
+        <div class="news-rank">${idx + 1}</div>
+        <div>
+          <div class="news-title">${titleHtml}</div>
+          <div class="news-press">${a.언론사 || ''}</div>
+        </div>
+        <div class="news-impact" style="color:${color}">${a.impact.toFixed(5)}</div>
       </div>`;
   }).join('');
 }
