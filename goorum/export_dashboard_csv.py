@@ -28,6 +28,7 @@ import pandas as pd
 PREDICTIONS_CSV = Path("/home/claude/news_collection/raw_data/xgb_output/val_predictions_full.csv")
 SHAP_NPY = Path("/home/claude/news_collection/raw_data/xgb_output/shap_values_val_full.npy")
 MODEL_JSON = Path("/home/claude/news_collection/raw_data/xgb_output/xgb_model_full.json")  # feature_names 용
+STOCK_NAMES_CSV = Path("/home/claude/news_collection/raw_data/stock_names.csv")  # 종목코드,종목명 매핑
 
 OUTPUT_DIR = Path("/home/claude/news_collection/raw_data/dashboard_csv")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -56,6 +57,17 @@ def main():
 
     shap_df = pd.DataFrame(shap_values, columns=[f"shap__{f}" for f in feature_names])
     combined = pd.concat([pred.reset_index(drop=True), shap_df], axis=1)
+
+    # 종목명 붙이기 (train_xgboost.py 출력에는 종목명이 빠져있어서 별도 매핑에서 조인)
+    if STOCK_NAMES_CSV.exists():
+        names = pd.read_csv(STOCK_NAMES_CSV, dtype={"종목코드": str})
+        combined = combined.merge(names, on="종목코드", how="left")
+        if combined["종목명"].isna().any():
+            missing = combined.loc[combined["종목명"].isna(), "종목코드"].unique()
+            print(f"⚠ 종목명을 못 찾은 종목코드: {list(missing)}")
+    else:
+        print(f"⚠ {STOCK_NAMES_CSV}가 없어 종목명 없이 진행합니다.")
+        combined["종목명"] = ""
 
     target_codes = STOCK_CODES or sorted(combined["종목코드"].unique())
     for code in target_codes:
