@@ -3,8 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <title>예측 요인 대시보드</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <style>
   :root {
     --bg: #14171c;
@@ -133,25 +131,43 @@
 </div>
 
 <script>
-let chart = null;
-const stocks = {}; // { 종목코드: points[] }
+let stockPoints = null; // 현재 선택된 종목의 points 배열
+const stocks = {}; // { 종목코드: rawPoints[] }
+
+// ------------------------------------------------------------------
+// 순수 JS CSV 파서 (외부 라이브러리 없이) - 이 CSV는 값에 쉼표/줄바꿈이
+// 섞일 일이 없는 단순 수치/날짜 데이터라 split 기반으로 충분함
+// ------------------------------------------------------------------
+function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+  const lines = text.split('\n');
+  const headers = lines[0].split(',');
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const vals = lines[i].split(',');
+    const obj = {};
+    headers.forEach((h, j) => { obj[h] = vals[j]; });
+    rows.push(obj);
+  }
+  return { headers, rows };
+}
 
 document.getElementById('fileInput').addEventListener('change', (e) => {
   const files = Array.from(e.target.files);
   let loaded = 0;
   files.forEach(file => {
-    Papa.parse(file, {
-      header: true,
-      dynamicTyping: true,
-      skipEmptyLines: true,
-      complete: (result) => {
-        const rows = result.data;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const { headers, rows } = parseCSV(evt.target.result);
         if (!rows.length || !('날짜' in rows[0])) {
           alert(`${file.name}: 예상한 컬럼(날짜 등)이 없습니다. export_dashboard_csv.py 결과물인지 확인하세요.`);
           return;
         }
-        const shapCols = Object.keys(rows[0]).filter(k => k.startsWith('shap__'));
-        const stockCode = String(rows[0]['종목코드'] ?? file.name.replace(/\D/g, '')).padStart(6, '0');
+        const shapCols = headers.filter(h => h.startsWith('shap__'));
+        const rawCode = (rows[0]['종목코드'] || file.name.replace(/\D/g, ''));
+        const stockCode = String(rawCode).padStart(6, '0');
 
         const points = rows.map(r => {
           const factors = shapCols
@@ -166,14 +182,18 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
             factors,
           };
         });
-        // predClose는 여기서 계산 (predicted_return -> 종가 환산)
         points.forEach(p => { p.predClose = p.close * (1 + p.predictedReturn); });
 
         stocks[stockCode] = points;
+      } catch (err) {
+        alert(`${file.name} 처리 중 오류: ${err.message}`);
+      } finally {
         loaded++;
         if (loaded === files.length) refreshStockSelector();
-      },
-    });
+      }
+    };
+    reader.onerror = () => alert(`${file.name}을 읽지 못했습니다.`);
+    reader.readAsText(file, 'UTF-8');
   });
 });
 
@@ -198,61 +218,129 @@ function loadStock(code) {
   document.getElementById('sliderRow').style.display = 'flex';
 
   const raw = stocks[code];
-  const points = raw.map((r, i) => ({
+  stockPoints = raw.map((r, i) => ({
     date: r.date,
     actualClose: r.close,
     predictedForThisDate: i > 0 ? raw[i - 1].predClose : null,
     factorsForThisPrediction: i > 0 ? raw[i - 1].factors : null,
   }));
 
-  if (chart) chart.destroy();
-  const ctx = document.getElementById('priceChart').getContext('2d');
-  chart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: points.map(p => p.date),
-      datasets: [
-        { label: '실제 종가', data: points.map(p => p.actualClose), borderColor: '#e8e6e1', backgroundColor: 'transparent', borderWidth: 1.6, pointRadius: 0, tension: 0.15 },
-        { label: '전날 예측 종가', data: points.map(p => p.predictedForThisDate), borderColor: '#e3a857', backgroundColor: 'transparent', borderWidth: 1.4, borderDash: [3, 3], pointRadius: 0, tension: 0.15 },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { labels: { color: '#8b8f98', font: { family: 'monospace', size: 11 } } },
-        tooltip: { backgroundColor: '#20242f', titleColor: '#e8e6e1', bodyColor: '#e8e6e1', borderColor: '#2a2f3a', borderWidth: 1 },
-      },
-      scales: {
-        x: { ticks: { color: '#8b8f98', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: '#2a2f3a' } },
-        y: { ticks: { color: '#8b8f98', font: { size: 10 } }, grid: { color: '#2a2f3a' } },
-      },
-      onClick: (evt) => {
-        const els = chart.getElementsAtEventForMode(evt, 'index', { intersect: false }, true);
-        if (els.length) setIndex(els[0].index);
-      },
-    },
-  });
-
   const slider = document.getElementById('dateSlider');
-  slider.max = points.length - 1;
-  slider.value = points.length - 1;
+  slider.max = stockPoints.length - 1;
+  slider.value = stockPoints.length - 1;
   slider.oninput = () => setIndex(+slider.value);
 
-  window._points = points;
-  setIndex(points.length - 1);
+  window._selectedIndex = stockPoints.length - 1;
+  drawChart();
+  setIndex(stockPoints.length - 1);
 }
 
-function fmt(n) {
-  if (n === null || n === undefined || isNaN(n)) return '-';
-  return Math.round(n).toLocaleString('ko-KR');
+// ------------------------------------------------------------------
+// Canvas 기반 라인차트 (외부 라이브러리 없이 직접 그림)
+// ------------------------------------------------------------------
+function drawChart() {
+  const canvas = document.getElementById('priceChart');
+  const wrap = document.getElementById('chartWrap');
+  const dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth, H = 300;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { top: 16, right: 14, bottom: 24, left: 58 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const actuals = stockPoints.map(p => p.actualClose);
+  const preds = stockPoints.map(p => p.predictedForThisDate).filter(v => v !== null);
+  const allVals = actuals.concat(preds);
+  const minV = Math.min(...allVals), maxV = Math.max(...allVals);
+  const margin = (maxV - minV) * 0.08 || 1;
+  const yMin = minV - margin, yMax = maxV + margin;
+
+  const n = stockPoints.length;
+  const xAt = i => pad.left + (n <= 1 ? 0 : (plotW * i / (n - 1)));
+  const yAt = v => pad.top + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  // 그리드 + Y축 라벨
+  ctx.strokeStyle = '#2a2f3a';
+  ctx.fillStyle = '#8b8f98';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.lineWidth = 1;
+  const ySteps = 4;
+  for (let s = 0; s <= ySteps; s++) {
+    const v = yMin + (yMax - yMin) * s / ySteps;
+    const y = yAt(v);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(Math.round(v).toLocaleString('ko-KR'), pad.left - 8, y);
+  }
+
+  // X축 날짜 라벨 (몇 개만 샘플링)
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  const xTickCount = Math.min(7, n);
+  for (let t = 0; t < xTickCount; t++) {
+    const idx = Math.round(t * (n - 1) / (xTickCount - 1 || 1));
+    ctx.fillText(stockPoints[idx].date, xAt(idx), H - pad.bottom + 6);
+  }
+
+  function drawLine(getVal, color, dashed) {
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash(dashed ? [4, 3] : []);
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      const v = getVal(i);
+      if (v === null || v === undefined || isNaN(v)) { started = false; continue; }
+      const x = xAt(i), y = yAt(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  drawLine(i => stockPoints[i].actualClose, '#e8e6e1', false);
+  drawLine(i => stockPoints[i].predictedForThisDate, '#e3a857', true);
+
+  // 범례
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#e8e6e1'; ctx.fillRect(pad.left, 4, 10, 2); ctx.fillText('실제 종가', pad.left + 16, 6);
+  ctx.fillStyle = '#e3a857'; ctx.fillRect(pad.left + 90, 4, 10, 2); ctx.fillText('전날 예측 종가', pad.left + 106, 6);
+
+  // 선택된 지점 표시
+  const selIdx = window._selectedIndex ?? n - 1;
+  const selX = xAt(selIdx);
+  ctx.strokeStyle = '#4a5060';
+  ctx.beginPath(); ctx.moveTo(selX, pad.top); ctx.lineTo(selX, H - pad.bottom); ctx.stroke();
+
+  canvas.onclick = (evt) => {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = evt.clientX - rect.left;
+    let nearest = 0, best = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(xAt(i) - clickX);
+      if (d < best) { best = d; nearest = i; }
+    }
+    setIndex(nearest);
+  };
+}
+
+window.addEventListener('resize', () => { if (stockPoints) drawChart(); });
+
+function fmt(v) {
+  if (v === null || v === undefined || isNaN(v)) return '-';
+  return Math.round(v).toLocaleString('ko-KR');
 }
 
 function setIndex(i) {
-  const points = window._points;
+  window._selectedIndex = i;
   document.getElementById('dateSlider').value = i;
-  const p = points[i];
+  drawChart();
+
+  const p = stockPoints[i];
   document.getElementById('dateLabel').textContent = p.date;
   document.getElementById('statActual').textContent = fmt(p.actualClose);
 
