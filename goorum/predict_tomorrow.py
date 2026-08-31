@@ -131,7 +131,7 @@ def export_to_dashboard(df: pd.DataFrame, today_df: pd.DataFrame, feature_cols: 
             "날짜": today.strftime("%Y-%m-%d"), "종목코드": code, "종목명": row["종목명"],
             "종가": row["종가"], "actual_next_close": "", "next_return": "",
             "news_score_missing": row.get("news_score_missing", ""),
-            "predicted_return": row["예측수익률"],
+            "predicted_return": row["다음날_예측수익률"],
         }
         for j, fname in enumerate(feature_cols):
             today_row[f"shap__{fname}"] = shap_values[i, j]
@@ -245,8 +245,12 @@ def main(today_str: str | None = None):
     X_today = today_df[feature_cols]
     pred_return = model.predict(X_today)
 
-    today_df["예측수익률"] = pred_return
-    today_df["예측종가"] = today_df["종가"] * (1 + pred_return)
+    # ⚠ 이 pred_return은 "오늘(today) 데이터를 갖고, 다음날(tomorrow)의 수익률"을
+    #   예측한 값. 컬럼명에 날짜를 명시해서 헷갈리지 않게 함 (예: 오늘=8/28이면
+    #   next_day_예측종가는 "8/29의 예측 종가"를 의미)
+    tomorrow_date_str = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    today_df["다음날_예측수익률"] = pred_return
+    today_df["다음날_예측종가"] = today_df["종가"] * (1 + pred_return)
 
     # ------------------------------------------------------------------
     # 이 예측에 대해서도 SHAP로 "왜 이렇게 예측했는지" 확인
@@ -258,22 +262,22 @@ def main(today_str: str | None = None):
 
     for i, (_, row) in enumerate(today_df.iterrows()):
         top_idx = pd.Series(shap_values[i], index=feature_cols).abs().sort_values(ascending=False).head(5)
-        print(f"\n[{row['종목코드']} {row['종목명']}] 예측수익률 {row['예측수익률']*100:.3f}%에 "
-              f"가장 크게 기여한 변수 Top 5:")
+        print(f"\n[{row['종목코드']} {row['종목명']}] {tomorrow_date_str} 예측수익률 "
+              f"{row['다음날_예측수익률']*100:.3f}%에 가장 크게 기여한 변수 Top 5:")
         for fname in top_idx.index:
             val = shap_values[i][feature_cols.index(fname)]
             print(f"  {fname}: {val:+.5f}")
 
     export_to_dashboard(df, today_df, feature_cols, shap_values, today)
 
-    result = today_df[["종목코드", "종목명", "종가", "예측수익률", "예측종가"]] \
-        .sort_values("예측수익률", ascending=False) \
-        .rename(columns={"종가": "오늘종가"})
+    result = today_df[["종목코드", "종목명", "종가", "다음날_예측수익률", "다음날_예측종가"]] \
+        .sort_values("다음날_예측수익률", ascending=False) \
+        .rename(columns={"종가": f"{today.strftime('%Y-%m-%d')}_실제종가"})
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
 
-    print(f"\n=== {today.date()} 기준, 다음 거래일 예측 (상위 5 / 하위 5) ===")
+    print(f"\n=== {today.date()} 데이터로 만든, {tomorrow_date_str}(다음 거래일) 예측 (상위 5 / 하위 5) ===")
     print(result.head(5).to_string(index=False))
     print("...")
     print(result.tail(5).to_string(index=False))
