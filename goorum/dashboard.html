@@ -246,7 +246,7 @@ function loadPriceFile(headers, rows, filename) {
 
   const points = rows.map(r => {
     const factors = shapCols
-      .map(c => ({ name: c.replace('shap__', ''), value: Number(r[c]) }))
+      .map(c => ({ name: c.replace('shap__', ''), value: toNum(r[c]) }))
       .filter(f => !isNaN(f.value))
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
       .slice(0, 8);
@@ -469,10 +469,11 @@ function setIndex(i) {
   const errEl = document.getElementById('statErr');
   const listEl = document.getElementById('factorList');
 
-  if (p.predictedForThisDate === null) {
+  if (p.predictedForThisDate === null || isNaN(p.predictedForThisDate)) {
+    // 예측값 자체가 없는 날(최근 일주일치처럼 모델을 안 돌린 날) - 당일 종가만 보여주고 끝
     predEl.textContent = '-';
     errEl.textContent = '-';
-    listEl.innerHTML = '<div class="hint">첫 날은 이전 데이터가 없어 예측이 없습니다.</div>';
+    listEl.innerHTML = '<div class="hint">이 날짜는 예측을 계산하지 않아 종가만 표시합니다.</div>';
     renderNewsPanel(null);
     return;
   }
