@@ -60,19 +60,31 @@ def build_window_features(window: pd.DataFrame, emb_cols: list[str]) -> np.ndarr
 
 def load_stock_order(merged: pd.DataFrame) -> list[str]:
     """
-    학습 때 저장해둔 stock_order.json을 우선 사용 (Dense(50) 출력 열 순서와
-    정확히 일치해야 하므로 이게 원칙). 파일이 없으면 이 정형데이터에서
-    sorted(유니크 종목코드)로 대체 생성하되, 같은 50개 종목 구성이라면
-    sorted() 특성상 동일한 순서가 나오므로 대부분 안전함 - 다만 학습 때와
-    종목 구성이 달라졌다면(상장폐지/신규 등) 절대 안전하지 않으니 주의.
-    """
-    if STOCK_ORDER_PATH.exists():
-        with open(STOCK_ORDER_PATH, encoding="utf-8") as f:
-            return json.load(f)
+    ⚠ 이 순서는 반드시 LSTM 학습 때 실제로 쓰인 Dense(50) 출력 순서와
+    정확히 같아야 함. 하나라도 다르면 scores[0][i]가 엉뚱한 종목에 배정되어
+    50개 종목 전체의 뉴스점수가 조용히 다 틀려버리는 치명적 문제가 생김.
 
-    print(f"⚠ {STOCK_ORDER_PATH}가 없어, 정형데이터에서 종목순서를 새로 만듭니다 "
-          f"(학습 때와 종목 구성이 동일해야 안전합니다).")
-    return sorted(merged["종목코드"].unique().tolist())
+    (예전에는 파일이 없으면 "지금 데이터에서 새로 sorted해서 대체"하는
+     fallback이 있었는데, 최근 top50 구성이 바뀐 게 확인된 상황에서는
+     이 fallback이 100% 잘못된 결과를 낳음 - 그래서 제거하고, 파일이
+     없으면 명확히 멈추게 바꿈)
+    """
+    if not STOCK_ORDER_PATH.exists():
+        raise FileNotFoundError(
+            f"{STOCK_ORDER_PATH}가 없습니다. 이건 LSTM 학습 때 저장된 종목 순서 파일이라 "
+            f"임시로 대체하면 안 됩니다 (지금 top50 구성이 학습 당시와 달라서, 대체 생성한 "
+            f"순서를 쓰면 점수가 엉뚱한 종목에 배정됩니다). 학습 당시 저장해둔 "
+            f"stock_order.json의 실제 경로를 STOCK_ORDER_PATH에 정확히 지정해주세요."
+        )
+
+    with open(STOCK_ORDER_PATH, encoding="utf-8") as f:
+        stock_order = json.load(f)
+
+    if len(stock_order) != 50:
+        print(f"⚠ stock_order 길이가 {len(stock_order)}개입니다 (50개 예상). "
+              f"학습 당시 파일이 맞는지 다시 확인해주세요.")
+
+    return stock_order
 
 
 def main(today_str: str | None = None):
