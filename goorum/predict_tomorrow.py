@@ -168,6 +168,22 @@ def main():
     today_df["예측수익률"] = pred_return
     today_df["예측종가"] = today_df["종가"] * (1 + pred_return)
 
+    # ------------------------------------------------------------------
+    # 이 예측에 대해서도 SHAP로 "왜 이렇게 예측했는지" 확인
+    # (지금까지 SHAP+Attention+LOO로 설명해온 것과 같은 맥락 - 최종 예측 하나에도 적용)
+    # ------------------------------------------------------------------
+    import shap
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_today)
+
+    for i, (_, row) in enumerate(today_df.iterrows()):
+        top_idx = pd.Series(shap_values[i], index=feature_cols).abs().sort_values(ascending=False).head(5)
+        print(f"\n[{row['종목코드']} {row['종목명']}] 예측수익률 {row['예측수익률']*100:.3f}%에 "
+              f"가장 크게 기여한 변수 Top 5:")
+        for fname in top_idx.index:
+            val = shap_values[i][feature_cols.index(fname)]
+            print(f"  {fname}: {val:+.5f}")
+
     result = today_df[["종목코드", "종목명", "종가", "예측수익률", "예측종가"]] \
         .sort_values("예측수익률", ascending=False) \
         .rename(columns={"종가": "오늘종가"})
