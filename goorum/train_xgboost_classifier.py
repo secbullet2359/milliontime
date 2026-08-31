@@ -1,34 +1,111 @@
 """
-train_xgboost.py(회귀: 수익률 예측)와 별도로, "오를지 내릴지"를 직접 분류하는 버전.
+방향(상승/하락) 직접 분류 - train_xgboost.py(회귀)와 완전히 독립된 스크립트.
 
 이유: tolerance(±3%/±5%)로 회귀 결과를 채점하는 방식은, 손실함수(MSE)가
-실제 평가 목표(방향/구간)와 어긋나 있었음 (MSE는 "변화없음"에 가깝게 수렴하도록
+실제 평가 목표(방향)와 어긋나 있었음 (MSE는 "변화없음"에 가깝게 수렴하도록
 모델을 유도함). 분류로 바꾸면 손실함수 자체가 "맞았다/틀렸다"를 직접 최적화함.
 
-기존 train_xgboost.py의 load_input/ensure_halt_flags/build_target/
-time_based_split/build_feature_weights를 그대로 재사용 (회귀 스크립트는
-건드리지 않고, 이 스크립트만 새로 추가).
+⚠ train_xgboost.py와 겹치는 함수(load_input, ensure_halt_flags, build_target,
+   time_based_split)들이 있는데, import로 재사용하지
+   않고 이 파일에 전부 복사해서 완전히 독립적으로 동작하게 함. 두 파일 중
+   하나를 고칠 때 다른 쪽도 같이 맞춰야 할 수 있으니 유지보수 시 주의.
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-sys.path.insert(0, str(Path(__file__).parent if "__file__" in dir() else Path.cwd()))
-import train_xgboost as base  # load_input, build_target, time_based_split, build_feature_weights 재사용
+INPUT_PATH = Path("/home/claude/news_collection/raw_data/merged_dataset_with_news_macro_dart.csv")
+OUTPUT_DIR = Path("/home/claude/news_collection/raw_data/xgb_output")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-MERGED_DATASET_PATH = base.INPUT_PATH
-DATA_CUTOFF_DATE = base.DATA_CUTOFF_DATE
+TRAIN_RATIO, VAL_RATIO = 0.70, 0.15
+
+# ⚠ 뉴스 임베딩이 2026-04-02까지만 존재함 - 그 이후는 news_influence_score가
+#   통째로 결측이라, 평가가 왜곡되지 않도록 이 날짜까지만 사용
+DATA_CUTOFF_DATE = "2026-04-02"
+
+DROP_COLS = ["날짜", "종목명", "next_return", "actual_next_close", "방향"]
 
 
-def add_direction_target(df: pd.DataFrame) -> pd.DataFrame:
-    """next_return의 부호로 방향(1=상승, 0=하락/보합)을 만든다."""
-    df = df.copy()
-    df["방향"] = (df["next_return"] > 0).astype(int)
+def load_input(path: Path) -> pd.DataFrame:
+    """확장자가 .xls/.xlsx라도 실제로는 CSV(텍스트)로 저장된 경우가 있어 시그니처를 보고 판단."""
+    with open(path, "rb") as f:
+        head = f.read(8)
+
+    is_binary_excel = head[:2] == b"PK" or head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    if path.suffix.lower() in (".xls", ".xlsx") and not is_binary_excel:
+        print(f"⚠ {path.name}: 확장자는 {path.suffix}지만 실제로는 CSV 텍스트 포맷입니다. CSV로 읽습니다.")
+        return pd.read_csv(path, dtype={"종목코드": str}, parse_dates=["날짜"], encoding="utf-8-sig")
+    elif path.suffix.lower() in (".xls", ".xlsx"):
+        return pd.read_excel(path, dtype={"종목코드": str}, parse_dates=["날짜"])
+    else:
+        return pd.read_csv(path, dtype={"종목코드": str}, parse_dates=["날짜"], encoding="utf-8-sig")
+
+
+def ensure_halt_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """'거래정지'/'재상장첫날' 컬럼이 없으면 거래량=0 기준으로 다시 계산."""
+    if "거래정지" in df.columns and "재상장첫날" in df.columns:
+        return df
+
+    print("⚠ '거래정지'/'재상장첫날' 컬럼이 없어 거래량 기준으로 다시 계산합니다.")
+    df = df.sort_values(["종목코드", "날짜"]).copy()
+    df["거래정지"] = (df["거래량"] == 0).astype(int)
+    df["재상장첫날"] = (
+        df.groupby("종목코드")["거래정지"].shift(1).fillna(0).astype(bool) & (~df["거래정지"].astype(bool))
+    ).astype(int)
+
+    n_halt = df["거래정지"].sum()
+    print(f"  재계산 결과: 거래정지 {n_halt}행, 재상장첫날 {df['재상장첫날'].sum()}행")
     return df
+
+
+def build_target(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    다음날 수익률(next_return) + 방향(1=상승,0=하락/보합)을 만든다.
+    거래정지/재상장첫날에 걸리는 경우는 NaN으로 남겨서 이후 dropna로 학습 제외.
+    """
+    df = ensure_halt_flags(df)
+    df = df.sort_values(["종목코드", "날짜"]).copy()
+
+    df["news_score_missing"] = df["news_influence_score_per_stock"].isna().astype(int)
+
+    df["next_return"] = df.groupby("종목코드")["종가"].shift(-1) / df["종가"] - 1
+    df["actual_next_close"] = df.groupby("종목코드")["종가"].shift(-1)
+
+    next_day_halt = df.groupby("종목코드")["거래정지"].shift(-1).fillna(0).astype(bool)
+    next_day_resume = df.groupby("종목코드")["재상장첫날"].shift(-1).fillna(0).astype(bool)
+    today_halt = df["거래정지"].astype(bool)
+
+    invalid = today_halt | next_day_halt | next_day_resume
+    df.loc[invalid, ["next_return", "actual_next_close"]] = np.nan
+
+    n_before = len(df)
+    df = df.dropna(subset=["next_return", "actual_next_close"])
+    print(f"타겟 정의 후 유효 샘플: {len(df)}/{n_before} "
+          f"({(n_before-len(df))/n_before*100:.1f}% 제외 - 거래정지/데이터끝 등)")
+
+    df["방향"] = (df["next_return"] > 0).astype(int)  # 회귀 대신 분류를 위한 타겟
+    return df
+
+
+def time_based_split(df: pd.DataFrame):
+    """날짜 기준으로 앞 70%/15%/15%를 train/val/test로 분리 (모든 종목이 같은 경계로 나뉨)."""
+    unique_dates = np.sort(df["날짜"].unique())
+    n = len(unique_dates)
+    train_end = unique_dates[int(n * TRAIN_RATIO)]
+    val_end = unique_dates[int(n * (TRAIN_RATIO + VAL_RATIO))]
+
+    train = df[df["날짜"] <= train_end]
+    val = df[(df["날짜"] > train_end) & (df["날짜"] <= val_end)]
+    test = df[df["날짜"] > val_end]
+
+    print(f"\nTrain: {len(train)}행 ({train['날짜'].min().date()} ~ {train['날짜'].max().date()})")
+    print(f"Val:   {len(val)}행 ({val['날짜'].min().date()} ~ {val['날짜'].max().date()})")
+    print(f"Test:  {len(test)}행 ({test['날짜'].min().date()} ~ {test['날짜'].max().date()})")
+    return train, val, test
 
 
 def evaluate_direction(y_true: np.ndarray, y_pred: np.ndarray, label: str) -> dict:
@@ -72,8 +149,6 @@ def fit_and_evaluate_classifier(train, val, test, feature_cols, tag: str):
 
     print(f"Train 상승비율: {y_train.mean()*100:.1f}% / Val: {y_val.mean()*100:.1f}% / Test: {y_test.mean()*100:.1f}%")
 
-    feature_weights = base.build_feature_weights(feature_cols)
-
     model = xgb.XGBClassifier(
         n_estimators=200,
         max_depth=4,
@@ -85,7 +160,6 @@ def fit_and_evaluate_classifier(train, val, test, feature_cols, tag: str):
         early_stopping_rounds=20,
         eval_metric="logloss",
         random_state=42,
-        feature_weights=feature_weights,
     )
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
     print(f"실제 사용된 나무 개수: {model.best_iteration + 1} / {model.n_estimators}")
@@ -102,31 +176,29 @@ def fit_and_evaluate_classifier(train, val, test, feature_cols, tag: str):
     shap_importance = pd.Series(np.abs(shap_values).mean(axis=0), index=feature_cols).sort_values(ascending=False)
     print(f"\n[{tag}-분류] SHAP 기준 변수중요도 Top 10:\n{shap_importance.head(10)}")
 
-    model.save_model(f"raw_data/xgb_output/xgb_classifier_{tag}.json")
+    model.save_model(str(OUTPUT_DIR / f"xgb_classifier_{tag}.json"))
 
     return model, val_result, test_result, shap_importance
 
 
 def main():
-    print(f"입력 로딩: {MERGED_DATASET_PATH}")
-    df = base.load_input(MERGED_DATASET_PATH)
+    print(f"입력 로딩: {INPUT_PATH}")
+    df = load_input(INPUT_PATH)
     df["종목코드"] = df["종목코드"].astype("category")
 
     cutoff = pd.Timestamp(DATA_CUTOFF_DATE)
     df = df[df["날짜"] <= cutoff].copy()
 
-    df = base.build_target(df)
-    df = add_direction_target(df)
+    df = build_target(df)
+    train, val, test = time_based_split(df)
 
-    train, val, test = base.time_based_split(df)
-
-    feature_cols = [c for c in df.columns if c not in base.DROP_COLS + ["방향"]]
+    feature_cols = [c for c in df.columns if c not in DROP_COLS]
 
     model, val_result, test_result, shap_importance = fit_and_evaluate_classifier(
         train, val, test, feature_cols, tag="direction_full"
     )
 
-    print(f"\n{'='*60}\n=== 회귀(next_xgboost.py) vs 분류(이 스크립트) 비교용 참고 ===")
+    print(f"\n{'='*60}\n=== 요약 ===")
     print(f"방향적중률 - Val: {val_result['accuracy']:.2f}% (다수클래스 베이스라인 {val_result['majority_baseline_acc']:.2f}%)")
     print(f"방향적중률 - Test: {test_result['accuracy']:.2f}% (다수클래스 베이스라인 {test_result['majority_baseline_acc']:.2f}%)")
 
