@@ -26,7 +26,9 @@ DART_PATH = Path("raw_data/dart_disclosures.csv")
 MODEL_PATH = Path("raw_data/xgb_output/xgb_model_full.json")
 OUTPUT_PATH = Path("raw_data/predict/tomorrow_prediction.csv")
 STOCK_ORDER_PATH = Path("raw_data/lstm_input/stock_order.json")  # 학습 때 쓰인 종목코드 순서
-DASHBOARD_CSV_DIR = Path("raw_data/dashboard_csv")  # export_dashboard_csv.py와 같은 폴더
+DASHBOARD_CSV_DIR = Path("raw_data/dashboard_csv")           # 검증기간(과거) 대시보드 CSV - 건드리지 않음
+DASHBOARD_PREDICT_DIR = Path("raw_data/dashboard_csv_predict")  # 예측기간 전용 - 여기만 갱신
+RECENT_WINDOW_DAYS = 7  # 뉴스 윈도우와 맞춰서, 최근 며칠치 실제가격을 같이 보여줄지
 
 MACRO_LEVEL_COLS = ["usd_krw", "base_rate", "fed_funds_rate", "us_10y_treasury"]
 
@@ -84,52 +86,72 @@ def ensure_halt_flags(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def export_to_dashboard(today_df: pd.DataFrame, feature_cols: list[str],
-                         shap_values: np.ndarray, today: pd.Timestamp):
+def export_to_dashboard(df: pd.DataFrame, today_df: pd.DataFrame, feature_cols: list[str],
+                         shap_values: np.ndarray, today: pd.Timestamp,
+                         window_days: int = RECENT_WINDOW_DAYS):
     """
-    오늘의 실제 데이터+SHAP를 기존 dashboard_<종목코드>.csv 뒤에 이어붙인다.
-    대시보드의 "전날 예측 종가" 라인은 (그 행의 predicted_return으로 만든 predClose)를
-    "다음 행"의 위치에 표시하는 구조라서, 아직 실제 종가가 없는 "내일"의 자리표시
-    행도 하나 추가해야 오늘 만든 예측이 차트에 실제로 나타난다.
+    예측기간 전용 대시보드 CSV를 만든다 (검증기간 파일 dashboard_<code>.csv는
+    건드리지 않음 - 서로 시기가 완전히 다른 데이터라 한 파일에 섞으면
+    날짜 사이가 1년 넘게 벌어지는데도 차트가 "바로 다음날"처럼 이어 그려서
+    말도 안 되는 오차/스케일 깨짐이 생겼기 때문).
+
+    구성:
+        - 최근 window_days(기본 7일)치는 실제 종가만 표시 (그 날짜들에 대한
+          모델 예측/SHAP는 계산한 적이 없어서 비워둠 - 순수 "최근 가격 흐름" 맥락용)
+        - 오늘(today)은 실제 종가 + 실제 예측/SHAP 전부 채움
+        - 내일은 실제 종가 없는 자리표시 행 (예측 종가를 차트에 표시하기 위함)
+
+    매번 그 시점 기준 "최근 window_days + 오늘 + 내일"만 다시 만들어서 덮어씀
+    (누적 로그가 아니라 매번 최신 스냅샷).
     """
-    DASHBOARD_CSV_DIR.mkdir(parents=True, exist_ok=True)
-    tomorrow = today + pd.Timedelta(days=1)  # 달력상 다음날 (주말/휴일 보정은 안 함 - 표시용)
-    today_str, tomorrow_str = today.strftime("%Y-%m-%d"), tomorrow.strftime("%Y-%m-%d")
+    DASHBOARD_PREDICT_DIR.mkdir(parents=True, exist_ok=True)
+    tomorrow = today + pd.Timedelta(days=1)
+    window_start = today - pd.Timedelta(days=window_days)
 
     for i, (_, row) in enumerate(today_df.iterrows()):
         code = row["종목코드"]
 
+        # 최근 window_days치 실제 가격 (오늘 제외, 오늘은 아래서 따로 채움)
+        recent = df[(df["종목코드"] == code) & (df["날짜"] >= window_start) & (df["날짜"] < today)]
+        recent = recent.sort_values("날짜")
+
+        rows = []
+        for _, r in recent.iterrows():
+            recent_row = {
+                "날짜": r["날짜"].strftime("%Y-%m-%d"), "종목코드": code, "종목명": row["종목명"],
+                "종가": r["종가"], "actual_next_close": "", "next_return": "",
+                "news_score_missing": "", "predicted_return": "",
+            }
+            for fname in feature_cols:
+                recent_row[f"shap__{fname}"] = ""  # 이 날짜들은 모델을 안 돌려서 SHAP 없음
+            rows.append(recent_row)
+
+        # 오늘 - 실제 예측/SHAP 전부 채움
         today_row = {
-            "날짜": today_str, "종목코드": code, "종목명": row["종목명"],
+            "날짜": today.strftime("%Y-%m-%d"), "종목코드": code, "종목명": row["종목명"],
             "종가": row["종가"], "actual_next_close": "", "next_return": "",
             "news_score_missing": row.get("news_score_missing", ""),
             "predicted_return": row["예측수익률"],
         }
         for j, fname in enumerate(feature_cols):
             today_row[f"shap__{fname}"] = shap_values[i, j]
+        rows.append(today_row)
 
+        # 내일 - 자리표시 (실제 종가 없음, 예측 종가만 차트에 표시되게 함)
         tomorrow_row = {
-            "날짜": tomorrow_str, "종목코드": code, "종목명": row["종목명"],
+            "날짜": tomorrow.strftime("%Y-%m-%d"), "종목코드": code, "종목명": row["종목명"],
             "종가": "", "actual_next_close": "", "next_return": "",
             "news_score_missing": "", "predicted_return": "",
         }
         for fname in feature_cols:
             tomorrow_row[f"shap__{fname}"] = ""
+        rows.append(tomorrow_row)
 
-        new_rows = pd.DataFrame([today_row, tomorrow_row])
+        out_path = DASHBOARD_PREDICT_DIR / f"dashboard_predict_{code}.csv"
+        pd.DataFrame(rows).to_csv(out_path, index=False, encoding="utf-8-sig")
 
-        out_path = DASHBOARD_CSV_DIR / f"dashboard_{code}.csv"
-        if out_path.exists():
-            old_df = pd.read_csv(out_path, dtype={"종목코드": str})
-            # 재실행 시 중복 방지: 오늘/내일 날짜의 기존 행은 지우고 새로 씀
-            old_df = old_df[~old_df["날짜"].isin([today_str, tomorrow_str])]
-            combined = pd.concat([old_df, new_rows], ignore_index=True)
-        else:
-            combined = new_rows
-
-        combined.to_csv(out_path, index=False, encoding="utf-8-sig")
-
-    print(f"\n대시보드용 CSV 업데이트 완료 ({len(today_df)}개 종목) -> {DASHBOARD_CSV_DIR}")
+    print(f"\n예측기간 대시보드 CSV 생성 완료 (최근 {window_days}일 + 오늘 + 내일, "
+          f"{len(today_df)}개 종목) -> {DASHBOARD_PREDICT_DIR}")
     print("dashboard.html에서 이 폴더의 CSV를 다시 선택하면 오늘자 예측이 차트 끝에 반영됩니다.")
 
 
@@ -234,7 +256,7 @@ def main():
             val = shap_values[i][feature_cols.index(fname)]
             print(f"  {fname}: {val:+.5f}")
 
-    export_to_dashboard(today_df, feature_cols, shap_values, today)
+    export_to_dashboard(df, today_df, feature_cols, shap_values, today)
 
     result = today_df[["종목코드", "종목명", "종가", "예측수익률", "예측종가"]] \
         .sort_values("예측수익률", ascending=False) \
