@@ -21,7 +21,8 @@ ARTICLE_EMB_PATH = Path("raw_data/predict/embeddings/article_embeddings.npy")
 ARTICLE_META_PATH = Path("raw_data/predict/embeddings/article_meta.csv")
 MODEL_PATH = Path("raw_data/lstm_output/attention_lstm_model.keras")
 STOCK_ORDER_PATH = Path("raw_data/lstm_input/stock_order.json")
-OUTPUT_DIR = Path("raw_data/dashboard_csv")  # export_dashboard_news.py와 같은 폴더
+OUTPUT_DIR = Path("raw_data/dashboard_csv_predict")  # predict_tomorrow.py의 가격/SHAP CSV와 같은 폴더
+RECENT_WINDOW_DAYS = 7  # 이보다 오래된 예측대상일 항목은 자동으로 정리
 
 
 def load_daily_embeddings_raw(path: Path) -> pd.DataFrame:
@@ -168,12 +169,17 @@ def main(today_str: str | None = None):
         out_path = OUTPUT_DIR / f"dashboard_news_{code}.csv"
         if out_path.exists():
             old_df = pd.read_csv(out_path, dtype={"종목코드": str})
-            old_df = old_df[old_df["예측대상일"] != today.strftime("%Y-%m-%d")]
+            old_dates = pd.to_datetime(old_df["예측대상일"])
+            # 오늘과 같은 날짜(재실행 중복)는 버리고, RECENT_WINDOW_DAYS보다 오래된 것도 정리
+            window_start = today - pd.Timedelta(days=RECENT_WINDOW_DAYS)
+            keep_mask = (old_dates >= window_start) & (old_dates != today)
+            old_df = old_df[keep_mask]
             new_df = pd.concat([old_df, new_df], ignore_index=True)
 
         new_df.to_csv(out_path, index=False, encoding="utf-8-sig")
 
-    print(f"\n{len(stock_order)}개 종목의 오늘자 뉴스 영향력 랭킹 저장 완료 -> {OUTPUT_DIR}")
+    print(f"\n{len(stock_order)}개 종목의 뉴스 영향력 랭킹 저장 완료 (최근 {RECENT_WINDOW_DAYS}일치만 유지) "
+          f"-> {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
