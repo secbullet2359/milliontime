@@ -159,6 +159,13 @@ const stocks = {};      // { 종목코드: rawPoints[] }
 const stockNames = {};  // { 종목코드: 종목명 }
 const newsData = {};    // { 종목코드: { 예측대상일: [{제목,언론사,URL,impact,중요일}, ...] } }
 
+// JS의 Number('')는 0이 되어버리는 함정이 있음(NaN이 아님) - 빈 문자열/undefined는
+// 명시적으로 NaN 처리해야 "값이 없음"과 "실제 값 0"을 구분할 수 있음
+function toNum(v) {
+  if (v === undefined || v === null || v === '') return NaN;
+  return Number(v);
+}
+
 // ------------------------------------------------------------------
 // CSV 파서 (외부 라이브러리 없이) - RFC4180 인용규칙 지원.
 // 뉴스 제목처럼 쉼표/따옴표/줄바꿈이 섞인 자유 텍스트 필드가 있어서
@@ -245,8 +252,8 @@ function loadPriceFile(headers, rows, filename) {
       .slice(0, 8);
     return {
       date: r['날짜'],
-      close: Number(r['종가']),
-      predictedReturn: Number(r['predicted_return']),
+      close: toNum(r['종가']),
+      predictedReturn: toNum(r['predicted_return']),
       factors,
     };
   });
@@ -388,6 +395,37 @@ function drawChart() {
   drawLine(i => stockPoints[i].actualClose, '#e8e6e1', false);
   drawLine(i => stockPoints[i].predictedForThisDate, '#e3a857', true);
 
+  // 실제 종가를 아직 모르는 날(예측만 있는 미래 지점)은 선을 억지로 잇지 않고,
+  // 직전 실제 종가 대비 상승/하락 방향만 점으로 표시
+  for (let i = 0; i < n; i++) {
+    const p = stockPoints[i];
+    if (isNaN(p.actualClose) && p.predictedForThisDate !== null && !isNaN(p.predictedForThisDate)) {
+      const prevActual = i > 0 ? stockPoints[i - 1].actualClose : NaN;
+      const isUp = !isNaN(prevActual) ? p.predictedForThisDate >= prevActual : true;
+      const dotColor = isUp ? '#e3a857' : '#c1666b';
+
+      // 직전 실제 종가 높이에 점을 찍어서 "여기서 이 방향으로 예상"이라는 걸 표시
+      const dotY = !isNaN(prevActual) ? yAt(prevActual) : yAt(p.predictedForThisDate);
+      const x = xAt(i);
+
+      ctx.beginPath();
+      ctx.arc(x, dotY, 5, 0, Math.PI * 2);
+      ctx.fillStyle = dotColor;
+      ctx.fill();
+
+      // 방향 화살표(위/아래 삼각형)를 점 옆에 작게 표시
+      ctx.beginPath();
+      ctx.fillStyle = dotColor;
+      if (isUp) {
+        ctx.moveTo(x + 9, dotY - 4); ctx.lineTo(x + 15, dotY - 4); ctx.lineTo(x + 12, dotY - 10);
+      } else {
+        ctx.moveTo(x + 9, dotY + 4); ctx.lineTo(x + 15, dotY + 4); ctx.lineTo(x + 12, dotY + 10);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
   // 범례
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#e8e6e1'; ctx.fillRect(pad.left, 4, 10, 2); ctx.fillText('실제 종가', pad.left + 16, 6);
@@ -441,10 +479,16 @@ function setIndex(i) {
 
   predEl.textContent = fmt(p.predictedForThisDate);
   predEl.className = 'v';
-  const err = p.actualClose - p.predictedForThisDate;
-  const errPct = (err / p.actualClose * 100);
-  errEl.textContent = (err >= 0 ? '+' : '') + fmt(err) + ' (' + errPct.toFixed(2) + '%)';
-  errEl.className = 'v ' + (Math.abs(errPct) <= 5 ? 'up' : 'down');
+  if (isNaN(p.actualClose)) {
+    // 실제 종가를 아직 모르는 날(예측만 있는 미래) - 오차 계산 자체가 의미 없음
+    errEl.textContent = '-';
+    errEl.className = 'v';
+  } else {
+    const err = p.actualClose - p.predictedForThisDate;
+    const errPct = (err / p.actualClose * 100);
+    errEl.textContent = (err >= 0 ? '+' : '') + fmt(err) + ' (' + errPct.toFixed(2) + '%)';
+    errEl.className = 'v ' + (Math.abs(errPct) <= 5 ? 'up' : 'down');
+  }
 
   const factors = p.factorsForThisPrediction || [];
   const maxAbs = Math.max(...factors.map(f => Math.abs(f.value)), 1e-9);
