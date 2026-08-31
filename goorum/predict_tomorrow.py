@@ -1,155 +1,186 @@
 """
-내일 예측 파이프라인 - 1단계: 오늘의 news_influence_score_per_stock 추론
+predict_tomorrow.py - 최종 단계
 
-⚠ prepare_lstm_dataset.py와는 다른 스크립트입니다. 그 스크립트는 "정답(y)이 있는
-   과거 데이터로 학습셋을 만드는" 용도라 예측(정답 없음)에는 쓸 수 없습니다.
-   이 스크립트는 정답 없이, 딱 하루치 시퀀스만 만들어서 predict()만 합니다.
+merged_dataset(정형데이터, 오늘까지) + today_news_score.csv(오늘의 뉴스점수)
++ macro_indicators.csv(환율/금리) + dart_disclosures.csv(공시)
+를 "오늘" 하루치로 전부 합쳐서, 최종 XGBoost 모델로 "내일 수익률"을 예측한다.
 
-경로 규칙: kospi_top50_data/predict/, raw_data/predict/ 구조를 그대로 따름
-(A옵션: 정형데이터의 마지막 날짜를 "오늘"로 보고, 그 기준 최근 7일 뉴스를 사용)
+⚠ macro/dart 데이터가 오늘(정형데이터 마지막 날짜)까지 못 미치는 경우 대응:
+   - macro: 마지막으로 확인된 값을 오늘까지 forward-fill (환율/금리는
+     "다음 발표/변경 전까지 유지"가 맞는 값이라 이 방식이 타당함)
+   - dart: 못 채운 기간은 공시 0건으로 처리 (실제로 없었는지, 아직 수집이
+     안 된 것인지 구분이 안 되니 참고용으로만 볼 것 - 아래 로그에 갭 기간을
+     명시적으로 출력함)
 """
 
-import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-WINDOW_SIZE = 7
+import xgboost as xgb
 
 MERGED_DATASET_PATH = Path("kospi_top50_data/predict/merged_dataset.csv")
-DAILY_EMB_PATH = Path("raw_data/predict/embeddings/daily_news_embeddings.parquet")
-MODEL_PATH = Path("raw_data/lstm_output/attention_lstm_model.keras")  # 학습 때 저장된 모델 (경로 확인 필요)
-STOCK_ORDER_PATH = Path("raw_data/lstm_input/stock_order.json")       # 학습 때 저장된 종목순서 (경로 확인 필요)
-OUTPUT_PATH = Path("raw_data/predict/today_news_score.csv")
+NEWS_SCORE_PATH = Path("raw_data/predict/today_news_score.csv")
+MACRO_PATH = Path("raw_data/macro_indicators.csv")
+DART_PATH = Path("raw_data/dart_disclosures.csv")
+MODEL_PATH = Path("raw_data/xgb_output/xgb_model_full.json")
+OUTPUT_PATH = Path("raw_data/predict/tomorrow_prediction.csv")
+STOCK_ORDER_PATH = Path("raw_data/lstm_input/stock_order.json")  # 학습 때 쓰인 종목코드 순서
+
+MACRO_LEVEL_COLS = ["usd_krw", "base_rate", "fed_funds_rate", "us_10y_treasury"]
 
 
-def load_daily_embeddings_raw(path: Path) -> pd.DataFrame:
-    if path.suffix == ".parquet":
-        try:
-            return pd.read_parquet(path)
-        except ImportError:
-            csv_alt = path.with_suffix(".csv")
-            if csv_alt.exists():
-                print(f"⚠ parquet 리더가 없어 {csv_alt.name}로 대체 로딩")
-                return pd.read_csv(csv_alt)
-            raise
-    return pd.read_csv(path)
+def load_csv(path: Path, **kwargs) -> pd.DataFrame:
+    return pd.read_csv(path, encoding="utf-8-sig", **kwargs)
 
 
-def build_daily_calendar_embeddings(daily_emb: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    daily_emb = daily_emb.copy()
-    daily_emb["날짜"] = pd.to_datetime(daily_emb["날짜"])
-    daily_emb = daily_emb.set_index("날짜").sort_index()
+def prepare_macro(path: Path, target_end: pd.Timestamp) -> pd.DataFrame:
+    macro = load_csv(path, parse_dates=["날짜"])
+    macro = macro[["날짜"] + MACRO_LEVEL_COLS].sort_values("날짜").set_index("날짜")
 
-    emb_cols = [c for c in daily_emb.columns if c.startswith("e")]
+    last_available = macro.index.max()
+    if last_available < target_end:
+        print(f"⚠ macro 데이터가 {last_available.date()}까지만 있어, "
+              f"{target_end.date()}까지 마지막 값으로 forward-fill합니다 "
+              f"(그 사이 {(target_end - last_available).days}일은 실제 변동을 반영 못함).")
 
-    full_range = pd.date_range(daily_emb.index.min(), daily_emb.index.max(), freq="D")
-    daily_emb = daily_emb.reindex(full_range)
-    daily_emb[emb_cols] = daily_emb[emb_cols].fillna(0.0)
-    daily_emb["기사수"] = daily_emb["기사수"].fillna(0).astype(int)
+    full_range = pd.date_range(macro.index.min(), max(macro.index.max(), target_end), freq="D")
+    macro = macro.reindex(full_range).ffill()
 
-    return daily_emb, emb_cols
+    for col in MACRO_LEVEL_COLS:
+        macro[f"{col}_diff"] = macro[col].diff()
+        macro[f"{col}_pct_change"] = macro[col].pct_change()
 
-
-def build_window_features(window: pd.DataFrame, emb_cols: list[str]) -> np.ndarray:
-    emb_part = window[emb_cols].values
-    count_part = np.log1p(window["기사수"].values).reshape(-1, 1)
-    return np.concatenate([emb_part, count_part], axis=1)
-
-
-def load_stock_order(merged: pd.DataFrame) -> list[str]:
-    """
-    ⚠ 이 순서는 반드시 LSTM 학습 때 실제로 쓰인 Dense(50) 출력 순서와
-    정확히 같아야 함. 하나라도 다르면 scores[0][i]가 엉뚱한 종목에 배정되어
-    50개 종목 전체의 뉴스점수가 조용히 다 틀려버리는 치명적 문제가 생김.
-
-    (예전에는 파일이 없으면 "지금 데이터에서 새로 sorted해서 대체"하는
-     fallback이 있었는데, 최근 top50 구성이 바뀐 게 확인된 상황에서는
-     이 fallback이 100% 잘못된 결과를 낳음 - 그래서 제거하고, 파일이
-     없으면 명확히 멈추게 바꿈)
-    """
-    if not STOCK_ORDER_PATH.exists():
-        raise FileNotFoundError(
-            f"{STOCK_ORDER_PATH}가 없습니다. 이건 LSTM 학습 때 저장된 종목 순서 파일이라 "
-            f"임시로 대체하면 안 됩니다 (지금 top50 구성이 학습 당시와 달라서, 대체 생성한 "
-            f"순서를 쓰면 점수가 엉뚱한 종목에 배정됩니다). 학습 당시 저장해둔 "
-            f"stock_order.json의 실제 경로를 STOCK_ORDER_PATH에 정확히 지정해주세요."
-        )
-
-    with open(STOCK_ORDER_PATH, encoding="utf-8") as f:
-        stock_order = json.load(f)
-
-    if len(stock_order) != 50:
-        print(f"⚠ stock_order 길이가 {len(stock_order)}개입니다 (50개 예상). "
-              f"학습 당시 파일이 맞는지 다시 확인해주세요.")
-
-    return stock_order
+    return macro.reset_index().rename(columns={"index": "날짜"})
 
 
-def main(today_str: str | None = None):
-    import tensorflow as tf
-    try:
-        from tensorflow.keras.saving import register_keras_serializable
-    except (ImportError, AttributeError):
-        from tensorflow.keras.utils import register_keras_serializable
+def prepare_dart(path: Path, target_date: pd.Timestamp) -> pd.DataFrame:
+    dart = load_csv(path, dtype={"종목코드": str}, parse_dates=["날짜"])
 
-    @register_keras_serializable(package="AttentionLSTM")
-    class WeightedSum(tf.keras.layers.Layer):
-        def call(self, inputs):
-            lstm_out, attention_weights = inputs
-            return tf.reduce_sum(lstm_out * attention_weights, axis=1)
+    last_available = dart["날짜"].max()
+    if last_available < target_date:
+        print(f"⚠ dart 공시 데이터가 {last_available.date()}까지만 있어, "
+              f"{target_date.date()}은 '공시 0건'으로 처리됩니다 "
+              f"(실제로 없었는지 미수집인지 구분 안 되니 참고만 하세요).")
 
-    from tensorflow.keras.models import load_model
+    counts = (
+        dart.groupby(["날짜", "종목코드", "pblntf_ty_filter"])
+        .size()
+        .unstack("pblntf_ty_filter", fill_value=0)
+    )
+    counts.columns = [f"공시_{c}건수" for c in counts.columns]
+    counts["공시_전체건수"] = counts.sum(axis=1)
+    counts["공시발생여부"] = (counts["공시_전체건수"] > 0).astype(int)
+    return counts.reset_index()
 
-    merged = pd.read_csv(MERGED_DATASET_PATH, dtype={"종목코드": str}, parse_dates=["날짜"])
 
-    # "오늘" = 명시적으로 안 주면 정형데이터의 마지막 날짜로 자동 설정 (A옵션)
-    today = pd.Timestamp(today_str) if today_str else merged["날짜"].max()
-    print(f"'오늘' 기준일: {today.date()} "
-          f"({'직접 지정' if today_str else '정형데이터 마지막 날짜로 자동 설정'})")
+def ensure_halt_flags(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.sort_values(["종목코드", "날짜"]).copy()
+    df["거래정지"] = (df["거래량"] == 0).astype(int)
+    df["재상장첫날"] = (
+        df.groupby("종목코드")["거래정지"].shift(1).fillna(0).astype(bool) & (~df["거래정지"].astype(bool))
+    ).astype(int)
+    return df
 
-    daily_emb_raw = load_daily_embeddings_raw(DAILY_EMB_PATH)
-    daily_emb, emb_cols = build_daily_calendar_embeddings(daily_emb_raw)
 
-    window_start = today - pd.Timedelta(days=WINDOW_SIZE)
-    window_end = today - pd.Timedelta(days=1)
-    window = daily_emb.loc[window_start:window_end]
+def main():
+    print(f"정형데이터 로딩: {MERGED_DATASET_PATH}")
+    df = pd.read_csv(MERGED_DATASET_PATH, dtype={"종목코드": str}, parse_dates=["날짜"])
+    today = df["날짜"].max()
+    print(f"'오늘' 기준일: {today.date()}")
 
-    if len(window) != WINDOW_SIZE:
-        raise ValueError(
-            f"{today.date()} 기준 최근 {WINDOW_SIZE}일치 뉴스 임베딩이 부족합니다 "
-            f"(있는 날: {len(window)}일, 필요한 범위: {window_start.date()} ~ {window_end.date()}, "
-            f"실제 임베딩 범위: {daily_emb.index.min().date()} ~ {daily_emb.index.max().date()}). "
-            f"뉴스 임베딩을 이 기간으로 다시 만들어야 합니다."
-        )
-    print(f"뉴스 윈도우: {window.index.min().date()} ~ {window.index.max().date()} "
-          f"(기사수: {window['기사수'].tolist()})")
+    df = ensure_halt_flags(df)
 
-    stock_order = load_stock_order(merged)
+    # ------------------------------------------------------------------
+    # macro 병합 (날짜 기준 broadcast)
+    # ------------------------------------------------------------------
+    macro = prepare_macro(MACRO_PATH, target_end=today)
+    df = df.merge(macro, on="날짜", how="left")
 
-    model = load_model(MODEL_PATH, compile=False)  # predict만 할 거라 compile 불필요
+    # ------------------------------------------------------------------
+    # dart 병합 ((날짜,종목코드) 기준, 없으면 0건)
+    # ------------------------------------------------------------------
+    dart = prepare_dart(DART_PATH, target_date=today)
+    dart_cols = [c for c in dart.columns if c not in ("날짜", "종목코드")]
+    df = df.merge(dart, on=["날짜", "종목코드"], how="left")
+    df[dart_cols] = df[dart_cols].fillna(0)
 
-    X = build_window_features(window, emb_cols)[np.newaxis, :, :]
-    scores, attn = model.predict(X, verbose=0)
+    # ------------------------------------------------------------------
+    # 오늘의 뉴스점수 병합 ((날짜,종목코드) 기준, 오늘 하루치만 존재)
+    # ------------------------------------------------------------------
+    news = load_csv(NEWS_SCORE_PATH, dtype={"종목코드": str}, parse_dates=["날짜"])
+    df = df.merge(news, on=["날짜", "종목코드"], how="left")
+    df["news_score_missing"] = df["news_influence_score_per_stock"].isna().astype(int)
 
-    result = pd.DataFrame({
-        "종목코드": stock_order,
-        "news_influence_score_per_stock": scores[0],
-    })
-    result.insert(0, "날짜", today.strftime("%Y-%m-%d"))
+    # ------------------------------------------------------------------
+    # 오늘 하루치만 추출 (예측 대상)
+    # ------------------------------------------------------------------
+    today_df = df[df["날짜"] == today].copy()
+
+    # ⚠ 오늘 이 50개 종목만으로 astype("category")를 하면, 학습 때 모델이
+    # 기억하고 있는 카테고리 순서/인덱스와 안 맞아서 XGBoost가
+    # "category not in training set" 에러를 낼 수 있음.
+    # 학습 때와 정확히 같은 종목코드 순서(stock_order.json)로 강제 지정해야 함.
+    import json
+    if STOCK_ORDER_PATH.exists():
+        with open(STOCK_ORDER_PATH, encoding="utf-8") as f:
+            stock_order = json.load(f)
+    else:
+        print(f"⚠ {STOCK_ORDER_PATH}가 없어 오늘 데이터에서 종목순서를 새로 만듭니다 "
+              f"(학습 때와 종목 구성이 동일해야 안전함).")
+        stock_order = sorted(df["종목코드"].unique().tolist())
+
+    today_df["종목코드"] = pd.Categorical(today_df["종목코드"], categories=stock_order)
+
+    # ⚠ stock_order에 없는 종목코드는 위 변환에서 조용히 NaN이 됨.
+    #   -> 최근 top50 구성이 바뀌어서(신규 편입/코드변경 등) 학습 당시 없던 종목이
+    #      섞여 있을 수 있음. 이 경우 그 종목은 모델이 학습한 적이 없어 예측이
+    #      불가능하므로, 전체를 막지 않고 "그 종목만 제외"하고 나머지는 예측 진행.
+    unseen_mask = today_df["종목코드"].isna() & df.loc[today_df.index, "종목코드"].notna()
+    if unseen_mask.any():
+        unseen_codes = df.loc[today_df.index[unseen_mask], "종목코드"].tolist()
+        print(f"\n⚠ 학습 당시 top50에 없던 종목코드 {len(unseen_codes)}개는 예측에서 제외합니다: "
+              f"{unseen_codes}")
+        print("  (top50 구성이 바뀌었거나 종목코드가 변경된 것으로 추정 - "
+              "이 종목들을 예측하려면 이 종목이 포함된 데이터로 모델을 재학습해야 합니다)")
+        today_df = today_df[~unseen_mask].copy()
+
+    print(f"\n오늘({today.date()}) 예측 대상 종목 수: {len(today_df)} "
+          f"(top50 중 학습 당시부터 있던 종목만 - 50개보다 적으면 위 제외 목록 확인)")
+    print(f"오늘 news_score_missing 비율: {today_df['news_score_missing'].mean()*100:.1f}% "
+          f"(0%가 아니면 today_news_score.csv 병합이 잘 안 된 것)")
+
+    # ------------------------------------------------------------------
+    # 모델 로딩 + feature 정합성 확인 + 예측
+    # ------------------------------------------------------------------
+    model = xgb.XGBRegressor(enable_categorical=True)
+    model.load_model(MODEL_PATH)
+    feature_cols = model.get_booster().feature_names
+
+    missing = set(feature_cols) - set(today_df.columns)
+    if missing:
+        raise ValueError(f"모델이 기대하는 feature가 없습니다: {missing}. "
+                          f"merge 단계에서 빠진 컬럼이 있는지 확인하세요.")
+
+    X_today = today_df[feature_cols]
+    pred_return = model.predict(X_today)
+
+    today_df["예측수익률"] = pred_return
+    today_df["예측종가"] = today_df["종가"] * (1 + pred_return)
+
+    result = today_df[["종목코드", "종목명", "종가", "예측수익률", "예측종가"]] \
+        .sort_values("예측수익률", ascending=False) \
+        .rename(columns={"종가": "오늘종가"})
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
 
-    attn_flat = attn[0].flatten()
-    important_offset = attn_flat.argmax()
-    important_day = window.index[important_offset]
-    print(f"\n오늘 예측에서 가장 중요했던 뉴스 날짜: {important_day.date()} "
-          f"(가중치 {attn_flat[important_offset]:.3f})")
-    print(f"저장 완료: {OUTPUT_PATH} ({len(result)}개 종목)")
-    print(result.sort_values("news_influence_score_per_stock", ascending=False).head(5))
+    print(f"\n=== {today.date()} 기준, 다음 거래일 예측 (상위 5 / 하위 5) ===")
+    print(result.head(5).to_string(index=False))
+    print("...")
+    print(result.tail(5).to_string(index=False))
+    print(f"\n저장 완료: {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
-    main()  # 필요하면 main("2026-08-28") 처럼 날짜를 직접 지정 가능
+    main()
