@@ -155,11 +155,19 @@ def export_to_dashboard(df: pd.DataFrame, today_df: pd.DataFrame, feature_cols: 
     print("dashboard.html에서 이 폴더의 CSV를 다시 선택하면 오늘자 예측이 차트 끝에 반영됩니다.")
 
 
-def main():
+def main(today_str: str | None = None):
+    """
+    ⚠ today_str을 명시적으로 지정하지 않으면 merged_dataset.csv의 최신 날짜를
+    '오늘'로 씀. predict_today_news_score.py / predict_news_impact.py도 같은
+    방식으로 동작하니, 세 스크립트를 같은 '오늘'로 맞추려면 셋 다 today_str을
+    생략(모두 최신 날짜 자동사용)하거나, 셋 다 명시적으로 같은 날짜를
+    넘겨줘야 함 - 섞어서 쓰면 서로 다른 날짜를 가리키게 될 수 있음.
+    """
     print(f"정형데이터 로딩: {MERGED_DATASET_PATH}")
     df = pd.read_csv(MERGED_DATASET_PATH, dtype={"종목코드": str}, parse_dates=["날짜"])
-    today = df["날짜"].max()
-    print(f"'오늘' 기준일: {today.date()}")
+    today = pd.Timestamp(today_str) if today_str else df["날짜"].max()
+    print(f"'오늘' 기준일: {today.date()} "
+          f"({'직접 지정' if today_str else '정형데이터 마지막 날짜로 자동 설정'})")
 
     df = ensure_halt_flags(df)
 
