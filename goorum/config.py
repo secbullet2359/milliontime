@@ -54,6 +54,10 @@ DART_PBLNTF_TY = ["B", "C", "I"]
 ECOS_STATS = {
     "usd_krw": {"stat_code": "731Y001", "item_code1": "0000001", "cycle": "D"},   # 원/달러 매매기준율
     "base_rate": {"stat_code": "722Y001", "item_code1": "0101000", "cycle": "M"},  # 한국은행 기준금리
+    # ⚠ 아래 두 개는 item_code1이 세부 옵션(평잔/말잔, 총지수 등)에 따라 달라질 수 있어
+    #    ECOS 사이트의 "통계코드검색"에서 최신 값으로 재확인 필요
+    "m2": {"stat_code": "101Y003", "item_code1": "BBHS00", "cycle": "M"},          # M2(광의통화, 평잔)
+    "cpi": {"stat_code": "901Y009", "item_code1": "0", "cycle": "M"},              # 소비자물가지수(총지수)
 }
 
 FRED_SERIES = {
