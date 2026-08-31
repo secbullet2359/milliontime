@@ -107,7 +107,7 @@ def main():
     # ------------------------------------------------------------------
     # 오늘의 뉴스점수 병합 ((날짜,종목코드) 기준, 오늘 하루치만 존재)
     # ------------------------------------------------------------------
-    news = load_csv(NEWS_SCORE_PATH, parse_dates=["날짜"])
+    news = load_csv(NEWS_SCORE_PATH, dtype={"종목코드": str}, parse_dates=["날짜"])
     df = df.merge(news, on=["날짜", "종목코드"], how="left")
     df["news_score_missing"] = df["news_influence_score_per_stock"].isna().astype(int)
 
