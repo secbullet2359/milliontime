@@ -118,7 +118,7 @@
 
 <div class="layout">
   <div class="panel">
-    <h2>실제 종가 vs 전날 예측된 종가</h2>
+    <h2>실제 종가 vs 예측 종가</h2>
     <div id="emptyState">
       export_dashboard_csv.py로 만든 dashboard_&lt;종목코드&gt;.csv 파일을<br>
       위 "CSV 파일 열기"로 선택해주세요. (여러 종목 동시 선택 가능)
@@ -134,7 +134,7 @@
     <h2>선택한 날짜 상세</h2>
     <div class="stat-grid">
       <div class="stat"><div class="k">실제 종가</div><div class="v" id="statActual">-</div></div>
-      <div class="stat"><div class="k">전날 예측 종가</div><div class="v" id="statPred">-</div></div>
+      <div class="stat"><div class="k">예측 종가</div><div class="v" id="statPred">-</div></div>
       <div class="stat"><div class="k">오차</div><div class="v" id="statErr">-</div></div>
     </div>
     <h2>이 예측에 가장 크게 기여한 변수 (SHAP)</h2>
@@ -143,7 +143,10 @@
 </div>
 
 <div class="note">
-  라인차트의 "전날 예측 종가"는 하루 전 데이터로 만든 예측을 다음날 실제 종가와 같은 x축 위치에 겹쳐 그린 것입니다.
+  차트의 "예측 종가"는 하루 전 데이터로 만든 예측을, 예측 대상인 그날짜의 위치에 겹쳐 그린 것입니다.
+  실제 값이 없는 날(아직 안 지난 날)은 실제 종가와 비슷한 값으로 예측되는 경우가 흔합니다 - 이건 버그가
+  아니라, 이 모델의 실제 신호가 약해서(방향적중률 50~52% 수준) "큰 변화가 없다"고 예측하는 쪽으로
+  수렴하는 정상적인 현상입니다.
   SHAP 값이 양수(앰버)면 그 변수가 예측 수익률을 밀어올린 방향, 음수(로즈)면 끌어내린 방향입니다.
   CSV는 export_dashboard_csv.py / export_dashboard_news.py로 만든 파일만 지원합니다.
 </div>
@@ -429,7 +432,7 @@ function drawChart() {
   // 범례
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#e8e6e1'; ctx.fillRect(pad.left, 4, 10, 2); ctx.fillText('실제 종가', pad.left + 16, 6);
-  ctx.fillStyle = '#e3a857'; ctx.fillRect(pad.left + 90, 4, 10, 2); ctx.fillText('전날 예측 종가', pad.left + 106, 6);
+  ctx.fillStyle = '#e3a857'; ctx.fillRect(pad.left + 90, 4, 10, 2); ctx.fillText('예측 종가', pad.left + 106, 6);
 
   // 선택된 지점 표시
   const selIdx = window._selectedIndex ?? n - 1;
