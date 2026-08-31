@@ -343,8 +343,8 @@ function drawChart() {
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
 
-  const actuals = stockPoints.map(p => p.actualClose);
-  const preds = stockPoints.map(p => p.predictedForThisDate).filter(v => v !== null);
+  const actuals = stockPoints.map(p => p.actualClose).filter(v => !isNaN(v));
+  const preds = stockPoints.map(p => p.predictedForThisDate).filter(v => v !== null && !isNaN(v));
   const allVals = actuals.concat(preds);
   const minV = Math.min(...allVals), maxV = Math.max(...allVals);
   const margin = (maxV - minV) * 0.08 || 1;
