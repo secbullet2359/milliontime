@@ -204,6 +204,26 @@ def evaluate(df: pd.DataFrame, y_pred_return: np.ndarray, label: str) -> dict:
     return {"label": label, "accuracy": accuracy, "mape": mape, "baseline_accuracy": baseline_accuracy}
 
 
+# 경제학적 근거가 뚜렷한 feature들 - 방향(+/-)은 강제하지 않고, colsample 샘플링 시
+# 후보로 더 자주 뽑히도록만 가중치를 줌 (강제로 분기를 만들게 하는 게 아니라
+# "이 feature들을 더 자주 검토해봐라" 정도의 안전한 우선순위)
+PRIORITY_FEATURES = {
+    "시장대비알파": 3.0,
+    "m2": 3.0, "m2_diff": 3.0, "m2_pct_change": 3.0,
+    "실질금리": 3.0,
+    "물가상승률_YoY": 2.0,
+    # 기존에 SHAP로 이미 중요성 확인됐던 macro feature들도 같이 우선순위 부여
+    "usd_krw": 2.0, "usd_krw_pct_change": 2.0,
+    "us_10y_treasury": 2.0, "us_10y_treasury_pct_change": 2.0,
+    "news_influence_score_per_stock": 2.0,
+}
+DEFAULT_FEATURE_WEIGHT = 1.0
+
+
+def build_feature_weights(feature_cols: list[str]) -> list[float]:
+    return [PRIORITY_FEATURES.get(f, DEFAULT_FEATURE_WEIGHT) for f in feature_cols]
+
+
 def fit_and_evaluate(train, val, test, feature_cols, tag: str):
     """
     한 번의 학습+평가 사이클. tag별로 결과 파일이 겹치지 않게 접두어를 붙임.
@@ -215,6 +235,11 @@ def fit_and_evaluate(train, val, test, feature_cols, tag: str):
     X_val, y_val = val[feature_cols], val["next_return"]
     X_test, y_test = test[feature_cols], test["next_return"]
 
+    feature_weights = build_feature_weights(feature_cols)
+    boosted = [f for f, w in zip(feature_cols, feature_weights) if w > DEFAULT_FEATURE_WEIGHT]
+    if boosted:
+        print(f"우선순위 부여된 feature: {boosted}")
+
     model = xgb.XGBRegressor(
         n_estimators=200,
         max_depth=4,
@@ -225,6 +250,7 @@ def fit_and_evaluate(train, val, test, feature_cols, tag: str):
         enable_categorical=True,
         early_stopping_rounds=20,
         random_state=42,
+        feature_weights=feature_weights,
     )
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
     print(f"실제 사용된 나무 개수: {model.best_iteration + 1} / {model.n_estimators} "
