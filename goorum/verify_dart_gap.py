@@ -1,12 +1,14 @@
 """
 저장 없이 검증만 하는 스크립트.
-특정 기간(기본: 2026-08-21 ~ 2026-08-30)에 50개 종목에 실제로 공시가
-없었는지, 아니면 API 호출 자체가 실패한 건지를 구분한다.
+특정 기간(기본: 2026-08-21 ~ 2026-08-30)에 50개 종목에 실제로
+"수집 대상 유형(B/C/I)"의 공시가 있었는지 확인한다.
 
-DART list.json 응답의 status로 구분:
-    "000" = 정상 조회, list가 비어있으면 진짜로 공시가 없는 것
-    "013" = 조회된 데이터 없음 (역시 "진짜로 없음"과 같은 의미)
-    그 외  = 키 오류/한도초과 등 실제 실패
+⚠ 이전 버전의 실수: DART list.json 응답 항목에는 애초에 pblntf_ty(공시유형)
+   필드가 없다 (그건 요청 시 넣는 "필터" 파라미터일 뿐, 응답에 포함되는
+   값이 아님). 그래서 필터 없이 조회한 뒤 사후에 유형을 가려내려던 이전
+   버전은 항상 실패했다 (전부 None으로 잡혀서 조용히 통계가 비어버림).
+   -> 그래서 collect_dart.py와 동일하게, pblntf_ty를 "요청 파라미터"로
+      직접 넣어서 B/C/I 각각 조회하는 방식으로 재작성함.
 """
 
 import io
@@ -23,6 +25,7 @@ DART_BASE = "https://opendart.fss.or.kr/api"
 
 CHECK_START = "20260821"
 CHECK_END = "20260830"
+PBLNTF_TYPES_TO_CHECK = ["B", "C", "I"]  # config.py의 DART_PBLNTF_TY와 반드시 동일하게 유지
 
 MERGED_DATASET_PATH = "/home/claude/news_collection/raw_data/merged_dataset_with_news_macro_dart.csv"
 
@@ -43,13 +46,14 @@ def get_corp_code_map() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def check_corp(corp_code: str, corp_name: str, stock_code: str) -> dict:
-    """pblntf_ty 필터 없이(전체 유형) 조회해서, 이 기간에 뭐라도 있었는지 확인."""
+def check_corp_by_type(corp_code: str, corp_name: str, stock_code: str, pblntf_ty: str) -> dict:
+    """collect_dart.py와 완전히 동일한 방식: pblntf_ty를 요청 파라미터로 직접 지정."""
     params = {
         "crtfc_key": DART_API_KEY,
         "corp_code": corp_code,
         "bgn_de": CHECK_START,
         "end_de": CHECK_END,
+        "pblntf_ty": pblntf_ty,
         "page_no": 1,
         "page_count": 100,
     }
@@ -58,20 +62,22 @@ def check_corp(corp_code: str, corp_name: str, stock_code: str) -> dict:
     status = data.get("status")
 
     if status == "013":
-        return {"종목코드": stock_code, "corp_name": corp_name, "status": "정상(공시없음)", "건수": 0, "유형목록": []}
+        return {"종목코드": stock_code, "corp_name": corp_name, "pblntf_ty": pblntf_ty,
+                "status": "정상(공시없음)", "건수": 0, "제목목록": []}
     if status == "000":
         items = data.get("list", [])
-        types = [item.get("pblntf_ty") for item in items]
-        return {"종목코드": stock_code, "corp_name": corp_name, "status": "정상", "건수": len(items), "유형목록": types}
-    return {"종목코드": stock_code, "corp_name": corp_name,
-            "status": f"⚠API오류({status}): {data.get('message')}", "건수": None, "유형목록": []}
+        titles = [item.get("report_nm") for item in items]
+        return {"종목코드": stock_code, "corp_name": corp_name, "pblntf_ty": pblntf_ty,
+                "status": "정상", "건수": len(items), "제목목록": titles}
+    return {"종목코드": stock_code, "corp_name": corp_name, "pblntf_ty": pblntf_ty,
+            "status": f"⚠API오류({status}): {data.get('message')}", "건수": None, "제목목록": []}
 
 
 def main():
     if not DART_API_KEY:
         raise RuntimeError("환경변수 DART_API_KEY가 없습니다.")
 
-    print(f"검증 기간: {CHECK_START} ~ {CHECK_END} (pblntf_ty 필터 없이 전체 유형 조회)\n")
+    print(f"검증 기간: {CHECK_START} ~ {CHECK_END}, 검증할 유형: {PBLNTF_TYPES_TO_CHECK}\n")
 
     corp_map = get_corp_code_map()
     target_codes = pd.read_csv(MERGED_DATASET_PATH, dtype={"종목코드": str},
@@ -80,40 +86,41 @@ def main():
 
     results = []
     for _, row in merged.iterrows():
-        r = check_corp(row["corp_code"], row["corp_name"], row["종목코드"])
-        results.append(r)
-        time.sleep(0.2)
+        for pty in PBLNTF_TYPES_TO_CHECK:
+            r = check_corp_by_type(row["corp_code"], row["corp_name"], row["종목코드"], pty)
+            results.append(r)
+            time.sleep(0.2)
 
     df = pd.DataFrame(results)
     n_api_errors = (df["status"].str.startswith("⚠")).sum()
     total_found = df["건수"].sum(skipna=True)
 
-    print(df[["종목코드", "corp_name", "status", "건수"]].to_string(index=False))
-
-    # 실제 유형 분포 확인 - collect_dart.py는 DART_PBLNTF_TY(기본 B/C/I)만 수집하도록 되어 있어서,
-    # 이 기간 공시가 전부 그 외 유형(A/D/E/F 등)이라면 "설계대로 제외된 것"이라 버그가 아님
-    all_types = [t for types in df["유형목록"] for t in types]
-    type_counts = pd.Series(all_types).value_counts()
-    print(f"\n실제 발견된 공시의 유형 분포:\n{type_counts}")
-
-    collected_types = {"B", "C", "I"}  # config.py DART_PBLNTF_TY 기본값과 반드시 동일하게 유지
-    in_scope = sum(v for t, v in type_counts.items() if t in collected_types)
-    out_of_scope = sum(v for t, v in type_counts.items() if t not in collected_types)
+    found = df[df["건수"].fillna(0) > 0]
+    if len(found) > 0:
+        print("=== B/C/I 유형으로 실제 발견된 공시 ===")
+        for _, r in found.iterrows():
+            print(f"  {r['종목코드']} {r['corp_name']} (유형 {r['pblntf_ty']}): {r['제목목록']}")
 
     print(f"\n=== 결론 ===")
-    print(f"API 오류로 확인 못 한 종목: {n_api_errors}개 (0이어야 신뢰 가능)")
-    print(f"이 기간 전체 종목 공시 건수 합계: {total_found}건")
-    print(f"  - collect_dart.py가 수집 대상으로 하는 유형(B/C/I): {in_scope}건")
-    print(f"  - 수집 대상이 아닌 유형(A/D/E/F 등): {out_of_scope}건")
+    print(f"API 오류: {n_api_errors}건 (0이어야 신뢰 가능)")
+    print(f"B/C/I 유형 공시 건수 합계: {total_found}건")
 
     if n_api_errors > 0:
-        print("-> API 오류가 있는 종목이 있어, '공시가 없다'고 단정할 수 없음. 위 표에서 ⚠ 표시된 항목 확인 필요.")
-    elif in_scope == 0:
-        print("-> 발견된 공시가 전부 수집 대상 외 유형(B/C/I가 아님)이라, dart_disclosures.csv에 없는 게 "
-              "'버그'가 아니라 config.py의 DART_PBLNTF_TY 필터 설계대로 정상 동작한 것입니다.")
+        print("-> API 오류가 있어 '없다'고 단정할 수 없습니다.")
+    elif total_found == 0:
+        print("-> B/C/I 유형 공시는 이 기간에 실제로 없었습니다. "
+              "(이전 197건은 A/D/E/F 등 수집 대상 외 유형이었을 가능성이 높음 - "
+              "다만 이전 검증 방식이 깨져있었어서 이 결론도 '아마 그럴 것'이라는 추정입니다. "
+              "확실히 하려면 dart_disclosures.csv 자체를 열어서 이 기간 corp_code별 "
+              "report_nm을 직접 눈으로 확인해보시는 걸 권장합니다.)")
     else:
-        print(f"-> 수집 대상 유형(B/C/I)인데도 {in_scope}건이 빠졌습니다. 이건 진짜로 collect_dart.py 쪽 "
-              f"수집 문제로 보입니다 (기간 파라미터, 페이지네이션 등 확인 필요).")
+        print(f"-> B/C/I 유형 공시가 {total_found}건 실제로 있는데 dart_disclosures.csv에 없습니다. "
+              f"이건 진짜 collect_dart.py의 수집 버그입니다. predict_tomorrow.py로 넘어가기 전에 "
+              f"먼저 collect_dart.py를 재실행해서 이 공시들을 채워야 합니다.")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
