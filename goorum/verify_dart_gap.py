@@ -58,12 +58,13 @@ def check_corp(corp_code: str, corp_name: str, stock_code: str) -> dict:
     status = data.get("status")
 
     if status == "013":
-        return {"종목코드": stock_code, "corp_name": corp_name, "status": "정상(공시없음)", "건수": 0}
+        return {"종목코드": stock_code, "corp_name": corp_name, "status": "정상(공시없음)", "건수": 0, "유형목록": []}
     if status == "000":
-        n = len(data.get("list", []))
-        return {"종목코드": stock_code, "corp_name": corp_name, "status": "정상", "건수": n}
+        items = data.get("list", [])
+        types = [item.get("pblntf_ty") for item in items]
+        return {"종목코드": stock_code, "corp_name": corp_name, "status": "정상", "건수": len(items), "유형목록": types}
     return {"종목코드": stock_code, "corp_name": corp_name,
-            "status": f"⚠API오류({status}): {data.get('message')}", "건수": None}
+            "status": f"⚠API오류({status}): {data.get('message')}", "건수": None, "유형목록": []}
 
 
 def main():
@@ -87,17 +88,32 @@ def main():
     n_api_errors = (df["status"].str.startswith("⚠")).sum()
     total_found = df["건수"].sum(skipna=True)
 
-    print(df.to_string(index=False))
+    print(df[["종목코드", "corp_name", "status", "건수"]].to_string(index=False))
+
+    # 실제 유형 분포 확인 - collect_dart.py는 DART_PBLNTF_TY(기본 B/C/I)만 수집하도록 되어 있어서,
+    # 이 기간 공시가 전부 그 외 유형(A/D/E/F 등)이라면 "설계대로 제외된 것"이라 버그가 아님
+    all_types = [t for types in df["유형목록"] for t in types]
+    type_counts = pd.Series(all_types).value_counts()
+    print(f"\n실제 발견된 공시의 유형 분포:\n{type_counts}")
+
+    collected_types = {"B", "C", "I"}  # config.py DART_PBLNTF_TY 기본값과 반드시 동일하게 유지
+    in_scope = sum(v for t, v in type_counts.items() if t in collected_types)
+    out_of_scope = sum(v for t, v in type_counts.items() if t not in collected_types)
+
     print(f"\n=== 결론 ===")
     print(f"API 오류로 확인 못 한 종목: {n_api_errors}개 (0이어야 신뢰 가능)")
     print(f"이 기간 전체 종목 공시 건수 합계: {total_found}건")
+    print(f"  - collect_dart.py가 수집 대상으로 하는 유형(B/C/I): {in_scope}건")
+    print(f"  - 수집 대상이 아닌 유형(A/D/E/F 등): {out_of_scope}건")
 
-    if n_api_errors == 0 and total_found == 0:
-        print("-> API 호출은 전부 정상(status 000/013)이었고, 실제로 이 기간에 공시가 없었던 것으로 확인됨.")
-    elif n_api_errors > 0:
+    if n_api_errors > 0:
         print("-> API 오류가 있는 종목이 있어, '공시가 없다'고 단정할 수 없음. 위 표에서 ⚠ 표시된 항목 확인 필요.")
+    elif in_scope == 0:
+        print("-> 발견된 공시가 전부 수집 대상 외 유형(B/C/I가 아님)이라, dart_disclosures.csv에 없는 게 "
+              "'버그'가 아니라 config.py의 DART_PBLNTF_TY 필터 설계대로 정상 동작한 것입니다.")
     else:
-        print(f"-> 공시가 {total_found}건 실제로 있었음. 기존 dart_disclosures.csv에 이게 빠져있다면 수집 스크립트 쪽 문제.")
+        print(f"-> 수집 대상 유형(B/C/I)인데도 {in_scope}건이 빠졌습니다. 이건 진짜로 collect_dart.py 쪽 "
+              f"수집 문제로 보입니다 (기간 파라미터, 페이지네이션 등 확인 필요).")
 
 
 if __name__ == "__main__":
